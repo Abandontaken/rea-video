@@ -32,12 +32,12 @@ VLM（能看图的多模态模型）建议配，不强制，配置方法也在 `
 # ⓪ 先看记住了什么：用户偏好（默认引擎、是否开 VLM、给你的偏好说明）和常见纠正类型
 rea-video memory
 # ① 拆解（产出 out/<名>/VIDEO.md + video/（给你读的拆片包）、report.html / report.md（给用户看）、breakdown.json、storyboard.jpg、audio.png、shots/、stems/）
-rea-video --env-file <你的 .env> decompose ref.mp4 -o out/ref --vlm --lang <zh|en>   # --lang 按用户提问的语言选（见「交付给用户」）；没有 VLM 配置就去掉 --env-file 和 --vlm；字幕/花字是日文就加 --ocr-lang ja；台词是孟加拉语就加 --asr-lang bn
+rea-video --env-file <你的 .env> decompose ref.mp4 -o out/ref --vlm --lang <zh|en>   # --lang 按用户提问的语言选（见「交付给用户」）；没有 VLM 配置就去掉 --env-file 和 --vlm；字幕/花字是日文就加 --ocr-lang ja，是韩文就加 --ocr-lang ko；台词是孟加拉语就加 --asr-lang bn
 # ② 看紧凑摘要：低置信镜头会被标出；先看 VLM: 那一行确认 VLM 是否生效
 rea-video summary out/ref/breakdown.json
 ```
 
-**省 token，按拆片包逐层读**（格式见仓库 `docs/videomd.md`；地图一行一个文件：`路径 | 约 token | 内容`）：先读 `out/ref/VIDEO.md`（卡片 + 概览 + 地图，约 2k token），多数问题到这里就能答；要按镜头回答时读 `video/timeline.md`（一行一镜，键名带 `~` 的是推断，不带的是画面里看得到的）；要核实某一镜再打开 `video/shots/<编号>.md` 和它 `frames` 里的截图；某一方面（声音、包装、复刻方案）按地图打开对应的 `video/*.md`。不要读 `breakdown.json`（几十万字）或 `report.md`（那是给人看的）。复核时每镜看 `shots/shot_XXX.jpg` 联系表就够（已含首 / 中 / 尾帧），`_first` / `_last` 是复刻时给生成模型参照用的，不用另开。旧的输出目录没有 `VIDEO.md` 时运行 `rea-video videomd out/ref` 补出来。
+**省 token，按拆片包逐层读**（格式见仓库 `docs/videomd.md`；地图一行一个文件：`路径 | 约 token | 内容`）：先读 `out/ref/VIDEO.md`（卡片 + 概览 + 地图，约 2k token），多数问题到这里就能答；要按镜头回答时读 `video/timeline.md`（一行一镜，键名带 `~` 的是推断，不带的是画面里看得到的）；要核实某一镜再打开 `video/shots/<编号>.md` 和它 `frames` 里的截图；某一方面（声音、包装、复刻方案）按地图打开对应的 `video/*.md`。不要读 `breakdown.json`（几十万字）或 `report.md`（那是给人看的）。复核时每镜看 `shots/shot_XXX.jpg` 联系表就够（已含首 / 中 / 尾帧），`_first` / `_last` 是复刻时给生成模型参照用的，不用另开。
 
 ### 看图复核并入（能看图的 agent 必做，开了 VLM 也建议做低置信镜头）
 
@@ -95,7 +95,9 @@ rea-video summary out/ref/breakdown.json      # 用并入后的结果写回复
 
 ## 3. 复刻（需要时）
 
-见 `references/remake.md`；可用的工具和方式（capsule-cinema、ChatCut、自己动手）和各自的特点列在 `references/remake-tools.md`。在本工具里直接跑：AI 镜头走 capsule-cinema（会计费，先 `rea-video remake-run --dry-run` 并征得用户同意）；实拍给拍摄方案；代码渲染用 Remotion（形状照 `frames/` 里的抠图和采样点做，做完用 `rea-video compare` 对原片打分）；用户自己的素材用 `rea-video assemble` 拼回原时间线。代码渲染和用户自己的素材也可以在 ChatCut 里做。
+用户要自己动手做时，先给报告「自己复刻」开头的「照着做」步骤（按视频类型排的顺序，内容全是这条原片的测量值），不要先讲模型规则和输入表。
+
+先跑 `rea-video remake out/ref`：能自动做的镜头先做掉（代码渲染重画、静图重建），其余原片占位，拼回原时间线，`remake/status.md` 逐镜写了还要做什么；拿到新镜头写进 `remake/mine.json` 再跑一次。细节见 `references/remake.md`；可用的工具和方式（capsule-cinema、ChatCut、自己动手）和各自的特点列在 `references/remake-tools.md`。在本工具里直接跑：AI 镜头走 capsule-cinema（会计费，先 `rea-video remake-run --dry-run` 并征得用户同意）；实拍给拍摄方案；代码渲染先跑 `rea-video code-remake out/ref` 出第一版（可改的工程 + 成片 + 打分），在它上面改，不要从零写；用户自己的素材用 `rea-video assemble` 拼回原时间线。代码渲染和用户自己的素材也可以在 ChatCut 里做。
 
 ## 参考文件
 
