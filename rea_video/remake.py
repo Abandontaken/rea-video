@@ -229,6 +229,9 @@ def _next_step(sh: dict) -> str:
 
     lab = sh["base"]["label"]
     need = (sh.get("replication") or {}).get("user_assets") or []
+    if (sh.get("replication") or {}).get("executor") == "motion_drive":
+        return T("动作驱动：rea-video drive 出驱动视频，按报告「动作驱动」的路线逐段生成，再 drive --join",
+                 "motion drive: rea-video drive for the drive clips, generate each segment by a route under “Motion drive”, then drive --join")
     if lab in GENERATED:
         return T("生成：用报告「生成单元」的提示词在网页上手动生成，或 remake-plan + remake-run（计费，先 --dry-run）",
                  "generate: paste the report's generation-unit prompt into a video model, or remake-plan + remake-run (paid; --dry-run first)")

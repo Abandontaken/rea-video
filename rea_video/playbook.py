@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from . import entities, narrative, performance
+from . import dance, entities, narrative, performance
 from .i18n import LangDict, T, model_name
 
 NAME_ZH = LangDict({
@@ -20,13 +20,13 @@ NAME_ZH = LangDict({
     "ai_drama": "AI 剧情短片", "ai_product": "AI 商品广告", "ai_mv": "AI 音乐 MV", "avatar": "数字人口播",
     "ai_clip": "AI 短片段（萌宠 / 奇观 / 单场景）", "animation": "3D / 动画",
     "film": "影视解说 / 混剪", "explainer": "动效科普 / 数据动画", "screen": "录屏教程 / 软件演示",
-    "slideshow": "图片推拉成片（图文 / 故事 / 推文）", "beat": "卡点混剪",
+    "slideshow": "图片推拉成片（图文 / 故事 / 推文）", "beat": "卡点混剪", "dance": "舞蹈 / 动作表演",
 }, en={
     "talking_head": "talking head", "desk": "tabletop / unboxing / product", "vlog": "vlog", "live_drama": "live-action skit",
     "ai_drama": "AI story short", "ai_product": "AI product ad", "ai_mv": "AI music video", "avatar": "digital-avatar talking head",
     "ai_clip": "short AI clip (pets / spectacle / single scene)", "animation": "3D / animation",
     "film": "film commentary / film-clip montage", "explainer": "motion-graphics explainer", "screen": "screen tutorial / software demo",
-    "slideshow": "stills with pan and zoom (photo story)", "beat": "beat-synced montage",
+    "slideshow": "stills with pan and zoom (photo story)", "beat": "beat-synced montage", "dance": "dance / action performance",
 })
 
 _LIVE = ("live_action",)
@@ -101,6 +101,8 @@ def kinds(b: dict) -> list[tuple[str, float]]:
         return []
     cast = entities.cast(b)
     s, audio = b.get("summary") or {}, b.get("audio") or {}
+    if dance.is_motion_video(b):  # the moves carry the video, however it was cut or made
+        return [("dance", dance.share(b))]
     voice = float((audio.get("voice") or {}).get("ratio") or 0) if (audio.get("voice") or {}).get("present") else 0.0
     avg, music = float(s.get("avg_shot_s") or 9), bool((audio.get("music") or {}).get("present"))
     if _sound_type(b) != "music_mv" and ((audio.get("beat_synced_edit") and avg <= 1.6 and voice < 0.3)
@@ -252,6 +254,26 @@ def _generate(b: dict) -> list[str]:
     return L
 
 
+def _drive(b: dict) -> str | None:
+    drive = (b.get("production_plan") or {}).get("drive") or []
+    if not drive:
+        return None
+    n = sum(len(u["shots"]) for u in drive)
+    s = sum(u["duration"] for u in drive)
+    k = sum(u["segments_est"] for u in drive)
+    kling = all(u["movers"] < 2 and len(u["shots"]) == 1 and u["full_body"] is not False and not u["camera_moves"] for u in drive)
+    tool = T("Kling 动作控制或 Seedance 2.5", "Kling Motion Control or Seedance 2.5") if kling else T("Seedance 2.5 全能参考", "Seedance 2.5 omni-reference")
+    first = drive[0]
+    how = (T("直接拿原片当参考视频（{t}）", "the source clip as the reference video ({t})", t=tool) if first["pick"]["key"] == "ref"
+           else T("深度视频驱动（`rea-video drive --depth`）", "a depth-video drive (`rea-video drive --depth`)"))
+    return T("**动作驱动**：{n} 镜（{s:.0f} 秒）的动作用原片当驱动，不用首尾帧生成。`rea-video drive <报告目录>` 擦掉字幕、在停顿处切成约 {k} 段；"
+             "一张角色设定图贯穿每段；这条先用{h}。{w}。新场景和原片差很多时改深度视频，连空间、机位都要换时做白模；每段的路线和提示词见下方「动作驱动」",
+             "**Motion drive**: the moves of {n} shot{p} ({s:.0f} s) are driven from the source, not generated from frames. `rea-video drive <report folder>` "
+             "erases the captions and cuts about {k} segments at calm moments; one character sheet for every segment; start with {h}. {w}. If the new setting "
+             "is far from the original, switch to a depth video, and to clay when the space and camera change too; routes and prompts per unit under “Motion drive” below",
+             n=n, p="" if n == 1 else "s", s=s, k=k, h=how, w=first["pick"]["why"])
+
+
 def _shoot_few(b: dict) -> str | None:
     """A handful of live shots inside a generated video: point at the plan instead of measuring the whole film as if it were shot."""
     shoot = (b.get("production_plan") or {}).get("shoot") or []
@@ -363,8 +385,12 @@ def _music(b: dict) -> str | None:
         bits.append(T("{t} {m}", "{t} {m}", t=key["tonic"], m=T("大调", "major") if key.get("mode") == "major" else T("小调", "minor")))
     if audio.get("beat_synced_edit"):
         bits.append(T("切镜卡在节拍上", "cuts land on the beat"))
-    return T("**配乐**：{x}；找同速度、同情绪的曲子，风格和段落见「声音」", "**Music**: {x}; find a track at the same tempo and mood, style and sections under “Sound”",
-             x=T("，", ", ").join(bits) or T("有配乐", "music present"))
+    x = T("，", ", ").join(bits) or T("有配乐", "music present")
+    if dance.is_motion_video(b):  # the moves were set to this track: another song moves every hit
+        return T("**配乐**：{x}；动作是踩着这首歌编的，用原曲（商用先确认版权）或同 BPM、重拍位置一样的曲子，生成和拼回都对着它",
+                 "**Music**: {x}; the moves were set to this song, so use it (check the rights for commercial use) or one at the same BPM with the "
+                 "accents in the same places, and generate and assemble against it", x=x)
+    return T("**配乐**：{x}；找同速度、同情绪的曲子，风格和段落见「声音」", "**Music**: {x}; find a track at the same tempo and mood, style and sections under “Sound”", x=x)
 
 
 def _sfx(b: dict) -> str | None:
@@ -389,6 +415,7 @@ _ORDER_SPEC: dict[str, list] = {
     "slideshow": ["content", "material", _voice, _local, _edit, _packaging, _music],
     "avatar": ["content", "material", _voice, _avatar, _edit, _packaging, _music],
     "ai_mv": [_music, "content", "material", _generate, _shoot_few, _local, _edit, _packaging, _sfx],  # the picture follows the song
+    "dance": [_music, "material", _drive, _shoot, _generate, _edit, _packaging, _sfx],  # the moves were set to the track
 }
 
 
@@ -396,15 +423,15 @@ def steps(b: dict, kind: str, also: str | None = None) -> list[str]:
     """The steps for this video in the order its kind is made; only steps with data behind them appear.
     `also`: a second kind covering a good part of the time; then every making step with data is listed."""
     live = kind in _LIVE_KINDS and not also
-    content, mat = _content(b), _material(b, live, refs=kind in _GENERATED_KINDS or bool(also))
+    content, mat = _content(b), _material(b, live, refs=kind in _GENERATED_KINDS + ("dance",) or bool(also))
     spec = None if also else _ORDER_SPEC.get(kind)
     order = [{"content": content, "material": mat}.get(x, x) if isinstance(x, str) else x for x in spec] if spec else None
     if order is None:
         if live:
-            order = [content, mat, _shoot, _voice, _edit, _packaging, _music, _sfx]
+            order = [content, mat, _shoot, _drive, _voice, _edit, _packaging, _music, _sfx]
         else:  # a few live shots inside a generated video get one pointer; a real live share gets the full shoot steps
             shoot = _shoot if also in _LIVE_KINDS or kind in _LIVE_KINDS else _shoot_few
-            order = [content, mat, _generate, _avatar, shoot, _code, _local, _voice, _edit, _packaging, _music, _sfx]
+            order = [content, mat, _generate, _drive, _avatar, shoot, _code, _local, _voice, _edit, _packaging, _music, _sfx]
     out: list[str] = []
     for x in order:
         got = x(b) if callable(x) else x

@@ -261,6 +261,10 @@ def _next_steps(b: dict) -> list[str]:
     if "code_render" in labels:
         L.append(T("代码渲染镜头由 `rea-video code-remake <本目录>` 重画（上一条会自动跑）：改 `code/spec.json` 再跑，不要从零写",
                    "Code-rendered shots are redrawn by `rea-video code-remake <this dir>` (the step above runs it): edit `code/spec.json` and rerun, do not write one from scratch"))
+    if (b.get("production_plan") or {}).get("drive"):
+        L.append(T("舞蹈 / 动作镜头不走首尾帧生成：`rea-video drive <本目录>` 出去掉字幕、按停顿切好的驱动视频，生成好的段用 `--join` 拼回；路线和提示词在 `video/remake.md` 的「动作驱动」",
+                   "Dance / action shots are not generated from first / last frames: `rea-video drive <this dir>` writes caption-free drive clips cut at calm moments, "
+                   "and `--join` puts the generated segments back; routes and prompts under “Motion drive” in `video/remake.md`"))
     if labels & {"ai_video", "cg_3d", "anim_2d", "stop_motion", "avatar"}:
         L.append(T("AI 类镜头：提示词在 `video/remake.md` 的「生成单元」；要自动生成跑 `rea-video remake-plan` + `remake-run --dry-run`，会计费，先问用户",
                    "AI shots: prompts are in the generation units of `video/remake.md`; for automatic generation run `rea-video remake-plan` + `remake-run --dry-run` (paid: ask the user first)"))

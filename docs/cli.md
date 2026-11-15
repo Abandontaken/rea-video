@@ -106,6 +106,8 @@ rea-video capsule-draft out/ref/breakdown.json --capsule-root $CC --capsule-name
 | `tiles VIDEO --start --end --every` | 按时间抽帧拼图，近距离复核 |
 | `frames OUT_DIR [--every 0.25] [--points 4000] [--all]` | 代码渲染镜头按场景切分（画上去的东西整体换了位置或形状就算新场景），写出 `frames/`：每场景首 / 中 / 尾原尺寸帧、`scene_XX_layer.png`（画上去那一层的抠图，背景和文字已去掉）、`points/scene_XX.json`（这一层的采样点）、`scenes.json`（底色、背景光、前景颜色、块数、范围、重心随时间的轨迹）；深底浅底都适用；decompose 遇到代码渲染镜头会自动跑 |
 | `compare REF REMAKE [--scenes frames/scenes.json] [-o DIR]` | 逐帧比较复刻和原片画上去的那一层：落在哪、形状重合度、多少；两边各按自己的底色取前景，换了底色也能直接比；并给出要改什么（整体早晚几秒、偏左偏右、铺开范围、多少、前景颜色和底色差多少），整段、每个场景、最差的几帧各一份；`-o` 写出 `compare.json` 和最差时刻的左右对比图 `compare_worst.jpg` |
+| `drive OUT_DIR [--shots 3-7] [--depth] [--no-clean] [--prefer 10] [--max 15]` | 舞蹈 / 动作镜头的驱动视频：擦掉后期字幕和贴纸，在动作停顿、靠近拍点处切段，写出 `drive/seg_XX.mp4`（无声）、`seg_XX_first.jpg`（角色图按它对齐景别和朝向）、`seg_XX_music.wav`、`segments.jpg` 和带各路线提示词的 `README.md`；默认用复刻方案里的「动作驱动」单元（看图复核时 `performance.move` 标出的镜头）；`--depth` 同时出深度视频（需要 transformers + torch） |
+| `drive OUT_DIR --join [RESULTS]` | 把生成好的段（默认 `drive/results.json`：`{"seg_01": 路径}`）按段长对齐、拼起来、按镜头切开，写进 `remake/mine.json`，再跑 `remake` 出对比片 |
 | `eval labels.yaml` | 在带标注的样本上评测准确率和切点 F1 |
 | `capsule breakdown.json` | 导出 capsule-cinema 的视频分析 JSON |
 | `models [ID] [--plan OUT_DIR]` | 列出能力地图里的生成模型；带 id 时打印这个模型的提示词写法和关键帧要求（`models keyframes` 是关键帧通用做法）；`--plan` 把已有拆解的复刻方案改按该模型重出 |

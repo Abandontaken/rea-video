@@ -557,8 +557,11 @@ def production_plan(b: dict, out: Path, engine: str = "seedance2.0") -> dict:
             "people": sum(r["duration"] for r in gen if (r.get("faces") or 0) > 0.3) >= 1.0}
     style = _style_line(gen, b["source"].get("aspect_ratio", "")) if gen else ""
     reused = reused_footage(gen)
+    from . import dance
+
+    motion = dance.motion_indices(b)  # the moves are the point: driven from the source motion, not generated from frames
     units: list[dict] = []
-    for run in _runs(shots, same_scene, GEN_LABELS, skip=set(reused)):
+    for run in _runs(shots, same_scene, GEN_LABELS, skip=set(reused) | motion):
         for segm in _split_run(run, lim, hard, unit_min):
             prev = units[-1] if units else None
             units.append(_unit(segm, len(units) + 1, lim, model, style, cast, prev, same_prev.get(segm[0]["index"], False), unit_min))
@@ -600,6 +603,7 @@ def production_plan(b: dict, out: Path, engine: str = "seedance2.0") -> dict:
             plan["overlay_note"] = T("生成单元镜头上的{k}属于后期包装，不写进提示词；参考帧上带着的先擦掉，生成后按「剪辑包装层」的时间轴叠回",
                                      "the {k} on the generated shots is post-production packaging: keep it out of the prompts, erase it from reference frames, "
                                      "and lay it back on from the packaging timeline after generation", k=join(on_gen))
+    plan["drive"] = dance.units(b)
     plan["shoot"] = _setups(shots, sig, thr, b)
     code, cur = [], []
     for r in shots + [None]:
@@ -669,6 +673,10 @@ def summary_line(plan: dict, b: dict) -> str:
         bits.append(T("{what} → {u} 个生成单元、{c} 次 {m} 调用", "{what} → {u} generation unit{us}, {c} {m} call{cs}",
                       what=what, u=nu, us=_s(nu), c=plan["calls"], cs=_s(plan["calls"]), m=plan["model_name"])
                     + (T("（另有 {n} 镜是同一段成片重复使用，直接剪）", " (plus {n} shot{s} reusing the same clip, just cut)", n=again, s=_s(again)) if again else ""))
+    if plan.get("drive"):
+        from .dance import summary_bit
+
+        bits.append(summary_bit(plan["drive"]))
     if plan["shoot"]:
         n_set = sum(len(s["setups"]) for s in plan["shoot"])
         n_shot = sum(len(s["shots"]) for s in plan["shoot"])
@@ -700,7 +708,7 @@ def summary_line(plan: dict, b: dict) -> str:
 def report_parts(plan: dict) -> dict[str, list[str]]:
     """The remake plan cut at its subsections, so a report can place each part under the step it belongs to:
     pre (AI notes and the input primer), units, shoot, code, local, footage. The summary line is left out."""
-    heads = {T("### 生成单元", "### Generation units"): "units", T("### 拍摄场次", "### Shooting scenes"): "shoot",
+    heads = {T("### 生成单元", "### Generation units"): "units", T("### 动作驱动", "### Motion drive"): "drive", T("### 拍摄场次", "### Shooting scenes"): "shoot",
              T("### 代码合成", "### Code composition"): "code", T("### 本地重建", "### Local rebuild"): "local",
              T("### 影视原片", "### Film / TV source"): "footage"}
     parts: dict[str, list[str]] = {}
@@ -840,6 +848,10 @@ def report_md(plan: dict) -> list[str]:
             if u.get("prompt_en"):
                 L += ["", T("英文提示词：", "English prompt:"), "", "```text", u["prompt_en"], "```"]
             L += ["", "</details>"]
+    if plan.get("drive"):
+        from .dance import report_md as _drive_md
+
+        L += _drive_md(plan["drive"])
     if plan["shoot"]:
         L += ["", T("### 拍摄场次", "### Shooting scenes"), "",
               T("同一场景的镜头集中拍完再换场景；场景内先拍大景别再拍特写，不用重新布光。每条前后多留约 1s 余量。",
