@@ -124,6 +124,9 @@ def _unit_of(b: dict) -> dict[int, str]:
     for s in plan.get("shoot", []):
         for i in s["shots"]:
             out[i] = s["id"]
+    for d in plan.get("drive", []):  # a filmed dance is both shot and driven; the drive unit is the remake route
+        for i in d["shots"]:
+            out[i] = d["id"]
     for c in plan.get("code", []):
         for i in c["shots"]:
             out[i] = c["id"]
@@ -131,7 +134,8 @@ def _unit_of(b: dict) -> dict[int, str]:
 
 
 def _route(r: dict, units: dict[int, str]) -> str:
-    base = ROUTE_ZH.get(r["base"]["label"], r["replication"].get("executor", ""))
+    base = (T("动作驱动", "motion drive") if (r.get("replication") or {}).get("executor") == "motion_drive"
+            else ROUTE_ZH.get(r["base"]["label"], r["replication"].get("executor", "")))
     u = units.get(r["index"])
     return f"{base} · {u}" if u else base
 
@@ -463,6 +467,9 @@ def _plan_md(b: dict) -> list[str]:
         if pre:  # grouping rules, the model's prompt conventions, the input primer: needed when writing prompts, not to follow the steps
             pre = ["", f'<details class="ref"><summary>{html.escape(T("写提示词前看：分组规则、模型写法、能喂哪些输入", "Before writing prompts: grouping, the model's conventions, what it takes as input"))}</summary>', ""] + pre + ["", "</details>", ""]
         sub(T("AI 生成", "AI generation"), [f"**{plan['summary'].split(T('；', '; '))[0]}**", ""] + pre + parts["units"])
+    if parts.get("drive"):
+        steps.append(T("**动作驱动**：舞蹈 / 动作镜头用原片当驱动，见下方「动作驱动」", "**Motion drive**: the dance / action shots are driven from the source, see “Motion drive” below"))
+        sub(T("动作驱动", "Motion drive"), parts["drive"])
     for key, title, step in (("code", T("代码合成", "Code build"), T("**录屏和动效**：见下方「代码合成」", "**Screen and motion graphics**: see “Code build” below")),
                              ("local", T("本地重建", "Local rebuild"), T("**静帧 / 推拉**：见下方「本地重建」", "**Stills / moves**: see “Local rebuild” below")),
                              ("footage", T("影视原片", "Film / TV source"), T("**影视片段**：见下方「影视原片」", "**Film / TV clips**: see “Film / TV source” below"))):

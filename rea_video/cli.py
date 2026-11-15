@@ -387,6 +387,32 @@ def cmd_code_remake(args) -> int:
     return 0
 
 
+def cmd_drive(args) -> int:
+    from .drive import drive, join
+
+    out = Path(args.out_dir)
+    if not (out / "breakdown.json").is_file():
+        raise SystemExit(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose")
+    try:
+        if args.join is not None:
+            res = join(out, Path(args.join) if args.join else None)
+        else:
+            shots = None
+            if args.shots:
+                shots = []
+                for part in args.shots.split(","):
+                    a, _, z = part.strip().partition("-")
+                    shots += list(range(int(a), int(z or a) + 1))
+            res = drive(out, shots=shots, depth=args.depth, clean=not args.no_clean, prefer=args.prefer, max_s=args.max)
+            res = {k: v for k, v in res.items() if k != "segments"} | {"segments": [
+                {k: s[k] for k in ("id", "start", "end", "duration", "cut_in", "cuts_inside")} for s in res["segments"]],
+                "readme": str(out / "drive" / "README.md")}
+    except (ValueError, FileNotFoundError) as e:
+        raise SystemExit(f"rea-video: {e}")
+    print(json.dumps(res, ensure_ascii=False, indent=1))
+    return 0
+
+
 def cmd_summary(args) -> int:
     """Compact, agent-friendly view of a breakdown (instead of reading the whole JSON)."""
     from .i18n import T, join
@@ -726,6 +752,16 @@ def main(argv: list[str] | None = None) -> int:
     cr.add_argument("--no-render", action="store_true", help="只写工程，不渲染")
     cr.add_argument("--no-compare", action="store_true", help="渲染后不打分")
     cr.set_defaults(func=cmd_code_remake)
+
+    dv = sub.add_parser("drive", help="舞蹈 / 动作镜头的驱动视频：擦掉字幕贴纸、在动作停顿处切段（drive/seg_XX.mp4），喂动作迁移或参考视频模型；--join 把生成好的段拼回原时间线")
+    dv.add_argument("out_dir", help="decompose 的输出目录")
+    dv.add_argument("--shots", help="只做这些镜头，如 3-7,9（默认用复刻方案里的动作驱动单元）")
+    dv.add_argument("--depth", action="store_true", help="同时出深度视频（需要 transformers + torch；没有时 README 里给 Video Depth Anything 命令）")
+    dv.add_argument("--no-clean", action="store_true", help="不擦字幕和贴纸")
+    dv.add_argument("--prefer", type=float, help="每段的理想长度（秒），默认 10")
+    dv.add_argument("--max", type=float, help="每段最长（秒），默认 15；Kling 最长 30")
+    dv.add_argument("--join", nargs="?", const="", default=None, metavar="RESULTS", help="把生成好的段（默认 drive/results.json）拼回去，写进 remake/mine.json")
+    dv.set_defaults(func=cmd_drive)
 
     sm = sub.add_parser("summary", help="紧凑打印拆解结果（低置信镜头会被标出来）")
     sm.add_argument("breakdown")

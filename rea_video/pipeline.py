@@ -620,6 +620,9 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
     """(Re)classify every shot from stored features + VLM answers, plan replication,
     summarise and write breakdown.json / reports. Safe to call again after the
     classifier changes (no re-decoding)."""
+    from . import dance
+
+    dance.mark(breakdown)  # speech / singing share and product context per shot, for the motion-drive guard
     out = Path(out)
     set_lang(breakdown.get("lang", "zh"))
     # remember the engine: apply-review / correct / eval call finalize without one and must not reset it
