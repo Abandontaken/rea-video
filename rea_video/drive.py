@@ -30,6 +30,10 @@ from .util import LOG, read_json, write_image, write_json
 CURVE_FPS = 12.0
 CURVE_W = 160
 PAD = 0.012  # share of the frame added around an overlay box before erasing
+# what is erased: lines laid on in the edit. Labels and counters follow things in the picture, and in a dance that
+# is the lettering on the dancer's clothes; erasing it smears the body the model has to learn the moves from
+ERASE_KINDS = ("subtitle", "title", "huazi")
+MIN_SAMPLES = 3  # OCR reads a real overlay again and again; text on a moving body turns up in one or two samples
 SUB_HOLD = 0.8  # seconds a subtitle may outlive its OCR end time
 T_PAD = 0.25  # seconds added before / after an overlay: OCR samples a few times a second, so its in / out times are coarse
 
@@ -39,15 +43,17 @@ def _ff(args: list[str]) -> None:
 
 
 def overlays(b: dict) -> list[dict]:
-    """Post-production boxes to erase: subtitles, styled text, titles, labels and stickers laid on top
-    (text that is part of the picture and stickers a reader marked as in the picture stay)."""
+    """Post-production boxes to erase: subtitles, titles and styled text read steadily, and stickers laid on top
+    (text that is part of the picture, labels on things, one-off reads and stickers marked as in the picture stay)."""
     from .classify import _same_words
 
     pk = b.get("packaging") or {}
     out = []
     for c in pk.get("text_cues") or []:
-        if c.get("part_of_picture") or c.get("kind") == "scene" or not c.get("bbox"):
+        if c.get("part_of_picture") or c.get("kind") not in ERASE_KINDS or not c.get("bbox"):
             continue
+        if int(c.get("samples") or 0) < MIN_SAMPLES:
+            continue  # a flicker read: printing on a dancer's clothes, caught for a frame or two as it turns past
         mid = (c["t0"] + c["t1"]) / 2
         r = next((r for r in b.get("shots", []) if r["start"] <= mid < r["end"]), None) or {}
         said = (r.get("vlm") or {}).get("overlay_text")
@@ -67,7 +73,7 @@ def overlays(b: dict) -> list[dict]:
         later = [y["t0"] for y in subs if y["t0"] > x["t0"] + 0.05 and abs(cy(y) - cy(x)) < 0.06]  # the next line in the same band
         x["t1"] = min(x["t1"] + SUB_HOLD, max(x["t1"], min(later))) if later else x["t1"] + SUB_HOLD
     for s in pk.get("stickers") or []:
-        if s.get("in_picture") or s.get("is_overlay") is False or not s.get("bbox"):
+        if s.get("in_picture") or s.get("is_overlay") is False or s.get("confidence") == "low" or not s.get("bbox"):
             continue
         out.append({"t0": float(s["t0"]), "t1": float(s["t1"]), "bbox": s["bbox"], "what": s.get("kind_zh") or "sticker"})
     return out
@@ -123,7 +129,7 @@ def cut_points(a: float, z: float, ts: np.ndarray, es: np.ndarray, beats: list[f
     the preferred length each), then each cut is searched around its even split: the source's own cuts are free
     seams; inside a take the calmest moment near a beat wins."""
     dur = z - a
-    n = max(int(np.ceil(dur / lim["max"] - 1e-6)), int(round(dur / lim["prefer"])), 1)
+    n = dance.segment_count(dur, lim)
     if n <= 1:
         return []
     step = dur / n

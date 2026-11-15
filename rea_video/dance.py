@@ -43,6 +43,18 @@ def _product(rec: dict) -> bool:
     return any(it.get("kind") in PRODUCT_KINDS for it in (m.get("items") or []) + (m.get("references") or []))
 
 
+def _talking(rec: dict, p: dict | None) -> bool:
+    """Most of the shot is under a voice that belongs to the person on screen. Sung vocals are usually the song the
+    dance is set to, so they count only when a reader heard the person in the shot sing (performance.voice). In a
+    music video the people are mostly singing the song, and its vocals are found only in part, so every shot counts;
+    a full-body dance passes either way."""
+    if rec.get("song_video"):  # the whole video is a song, and vocal detection misses much of a sung track
+        return True
+    if float(rec.get("talk_share") or 0) < TALK:
+        return False
+    return not rec.get("sung") or bool((p or {}).get("voice"))
+
+
 def guard(rec: dict) -> str:
     """Why a shot is not driven from the source motion even if a reader marked it, "" when nothing stops it.
     Product shots are selling, not choreography; a shot mostly under speech or singing without the whole body in
@@ -50,24 +62,40 @@ def guard(rec: dict) -> str:
     if _product(rec) or rec.get("product_video"):
         return T("带货 / 商品镜头", "product / selling shot")
     p = performance.of(rec) or {}
-    if float(rec.get("talk_share") or 0) >= TALK and p.get("full_body") is not True:
+    if _talking(rec, p) and p.get("full_body") is not True:
         return T("边说或边唱、不是全身大动作：对口型或数字人就能做", "talking or singing without full-body moves: lip sync or an avatar does it")
     return ""
 
 
 def mark(b: dict) -> None:
-    """Stamp what the guard needs from the whole video: how much of each shot is under speech or singing, and
-    whether the video is a product / desk video."""
+    """Stamp what the guard needs from the whole video: how much of each shot is under a voice, whether that voice
+    is sung, and whether the video is a product / desk video."""
     segs = ((b.get("audio") or {}).get("voice") or {}).get("segments") or [] if ((b.get("audio") or {}).get("voice") or {}).get("present") else []
-    fmt = (((b.get("aspects") or {}).get("format") or {}).get("result") or {}).get("format")
+    from .aspects.base import video_seen
     from .entities import cast
 
-    shop = fmt in ("desk", "product") or any(c.get("kind") == "product" for c in cast(b).get("characters") or [])
+    # only what a reader said: the measured format calls a small, masked, full-body dancer "handheld product"
+    seen = " ".join(video_seen(b, "format", "format").values())
+
+    ctx = (b.get("sound_sources") or {}).get("format_context") or {}
+    sung = ctx.get("vocal_style") == "singing"
+    song = ctx.get("video_type") == "music_mv"  # the whole video is a song: the people in it are mostly singing it
+    shop = any(w in seen for w in ("带货", "开箱", "商品", "桌面", "unboxing", "product", "tabletop")) \
+        or any(c.get("kind") == "product" for c in cast(b).get("characters") or [])
     for r in b.get("shots", []):
         d = r.get("duration") or 0
         over = sum(max(0.0, min(r["end"], z) - max(r["start"], a)) for a, z in segs)
         r["talk_share"] = round(over / d, 3) if d else 0.0
         r["product_video"] = shop
+        r["sung"] = sung
+        r["song_video"] = song
+
+
+def segment_count(dur: float, lim: dict) -> int:
+    """How many drive segments a stretch is cut into: as few as the maximum allows, about the preferred length each."""
+    import math
+
+    return max(math.ceil(dur / lim["max"] - 1e-6), round(dur / lim["prefer"]), 1)
 
 
 def move_of(rec: dict) -> dict | None:
@@ -92,18 +120,16 @@ def is_motion_video(b: dict) -> bool:
 
 
 def maybe_motion(rec: dict, b: dict) -> bool:
-    """A hint for the image reader, not a verdict: a long shot with a lot of local motion over music and little speech.
-    Fights, crowds and handheld walks look the same in these numbers, so it only asks the reader to look."""
+    """A hint for the image reader, not a verdict: a long shot with a lot of local motion over music, not a product
+    shot and not mostly speech (sung vocals are the song). Fights, crowds and handheld walks look the same in these
+    numbers, so it only asks the reader to look."""
     if (rec.get("base") or {}).get("label") not in MOTION_LABELS or rec.get("duration", 0) < 3 or _product(rec) or rec.get("product_video"):
         return False
-    if float(rec.get("talk_share") or 0) >= TALK:
+    if float(rec.get("talk_share") or 0) >= TALK and not rec.get("sung"):  # mostly speech: a talk, not a dance
         return False
     f = rec.get("features") or {}
-    audio = b.get("audio") or {}
-    voice = audio.get("voice") or {}
-    talk = float(voice.get("ratio") or 0) if voice.get("present") else 0.0
-    return (float(f.get("local_motion_ratio") or 0) >= 0.3 and f.get("camera") != "planar_zoom_pan"
-            and bool((audio.get("music") or {}).get("present")) and talk < 0.3)
+    return (float(f.get("local_motion_ratio") or 0) >= 0.2 and f.get("camera") != "planar_zoom_pan"
+            and bool(((b.get("audio") or {}).get("music") or {}).get("present")))
 
 
 def _runs(b: dict) -> list[list[dict]]:
@@ -195,6 +221,15 @@ def _routes(u: dict) -> list[dict]:
     return order
 
 
+_NO_FACE = ("看不清", "看不到", "看不见", "遮", "口罩", "背对", "模糊", "not visible", "hidden", "covered", "mask", "blurred", "from behind")
+
+
+def _face_seen(p: dict) -> bool:
+    """The reader describes a face that can actually be seen (not "masked", "from behind", "too blurred")."""
+    f = str(p.get("face") or "").lower()
+    return bool(f) and not any(w in f for w in _NO_FACE)
+
+
 def pick(u: dict) -> dict:
     """The route to start from, decided by what this video shows: does the face carry the shot (only the source clip
     brings it across; depth, skeletons and clay keep the body alone) and is the background behind the dancer busy
@@ -266,12 +301,12 @@ def units(b: dict) -> list[dict]:
              "full_body": (all(fulls) if fulls else None),
              "backdrop": ("busy" if any(p.get("backdrop") == "busy" for p in perfs) else
                           "clean" if any(p.get("backdrop") == "clean" for p in perfs) else None),
-             "face_matters": any(p.get("face") and (p.get("key") or p.get("arc") or p.get("intensity") in ("mid", "high")) for p in perfs),
+             "face_matters": any(_face_seen(p) and (p.get("key") or p.get("arc") or p.get("intensity") in ("mid", "high")) for p in perfs),
              "camera_moves": any((r.get("features") or {}).get("camera") in _MOVING for r in run),
              "live": any(r["base"]["label"] == "live_action" for r in run),
              "labels": list(dict.fromkeys(r["base"]["label"] for r in run)),
              "bpm": _bpm(b), "beats": len(_beats(b, a, z)),
-             "segments_est": max(1, int(-(-dur // lim["max"]))),
+             "segments_est": segment_count(dur, lim),
              "framing": framing_words(run[0])[0], "who": [{k: c.get(k) for k in ("id", "name", "kind", "look")} for c in who],
              "scene": scene, "body": semi().join(dict.fromkeys(p.get("body") for p in perfs if p.get("body")))}
         u["pick"] = pick(u)
