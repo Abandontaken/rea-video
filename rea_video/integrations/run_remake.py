@@ -100,7 +100,7 @@ def main() -> None:
         label = j["id"] if j.get("unit") else f"shot {j['shot']}"
         print(f"{label}: {j['params']['generation_type']} via {j['params']['engine']} ...", flush=True)
         try:
-            if j["params"]["generation_type"] == "multimodal":  # reference clip + images: the engine's own tool takes these
+            if j.get("unit"):  # a unit's references go straight to the engine's own tool
                 p = {k: v for k, v in j["params"].items() if k != "engine"}
                 res = vgt._tool_for_engine(vgt.normalize_video_engine(j["params"]["engine"]))._run(**p)
             else:

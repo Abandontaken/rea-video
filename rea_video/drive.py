@@ -273,6 +273,19 @@ def clean_clip(b: dict, ranges: list[list[float]], path: Path, width: int = 720,
     return path
 
 
+def clean_frame(b: dict, t: float, path: Path, width: int = 1080) -> Path:
+    """One source frame at t with the edit's text erased: a composition reference for a model without reference video."""
+    src = Path(b["source"]["path"])
+    info = video_info(src)
+    boxes = overlays(b, persistent=True)
+    w, _ = scaled_size(info, min(width, info.width or width))
+    for f in iter_frames(src, info, w, start=t, duration=0.1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_image(path, erase(f, _mask(boxes, t, f.shape[1], f.shape[0]) if boxes else None))
+        break
+    return path
+
+
 def drive(out: Path, shots: list[int] | None = None, depth: bool = False, clean: bool = True,
           prefer: float | None = None, max_s: float | None = None) -> dict:
     b = read_json(out / "breakdown.json")

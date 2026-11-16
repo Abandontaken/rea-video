@@ -16,6 +16,7 @@ from .classify import LABEL_ZH
 from .i18n import LangDict, T, join, lang, semi, shot_ids
 from .packaging import layer_name, anchor_text
 from .production import report_md as production_md
+from .plan import shot_prompts
 from .sound_source import MUSIC_ZH, SFX_ZH, VOICE_ZH
 from .util import fmt_time
 from .visual import LABEL_COLOR
@@ -455,7 +456,7 @@ def _plan_md(b: dict) -> list[str]:
 
     plan = b.get("production_plan") or {}
     parts = report_parts(plan) if plan else {}
-    chosen = bool(b.get("engine_chosen"))
+    chosen = playbook.model_chosen(b)
     if not chosen:  # generation units, prompts and calls belong to a model the user has not picked yet
         for k in ("units", "pre", "drive"):
             parts.pop(k, None)
@@ -490,13 +491,13 @@ def _plan_md(b: dict) -> list[str]:
         if pre:  # grouping rules, the model's prompt conventions, the input primer: needed when writing prompts, not to follow the steps
             pre = ["", f'<details class="ref"><summary>{html.escape(T("写提示词前看：分组规则、模型写法、能喂哪些输入", "Before writing prompts: grouping, the model's conventions, what it takes as input"))}</summary>', ""] + pre + ["", "</details>", ""]
         m = plan.get("model_name") or T("视频模型", "the video model")
-        tip = T("> ⚠️ 下面的提示词是通用写法，按 {m} 的能力规划。不同模型的提示词写法不一样（分镜头怎么写、参考图怎么指代、台词怎么写、哪些写法会被忽略），"
-                "生成前按你实际用的模型的官方提示词指南改一遍，或者让 agent 用这个模型的提示词 skill 优化；换了模型，单次时长和能喂的图也要按新模型调。",
-                "> ⚠️ The prompts below are generic and planned for {m}. Every model reads prompts differently (how shots are split, how references are "
-                "addressed, how dialogue is written, what gets ignored). Before generating, rewrite them following the official prompt guide of the model "
-                "you actually use, or have the agent refine them with that model's prompting skill; with another model, also adjust the length per call "
-                "and the images it can take.", m=m)
-        sub(T("AI 生成", "AI generation"), [f"**{plan['summary'].split(T('；', '; '))[0]}**", "", tip, ""] + pre + parts["units"])
+        drafts = [u["id"] for u in plan.get("units") or [] if u["id"] not in (plan.get("prompts") or {})]
+        tip = (T("> ⚠️ {u} 的提示词还是通用草稿。生成前按 {m} 的官方写法改好（或让 agent 用这个模型的提示词 skill 写），放进 `remake/prompts.json`，"
+                 "图片编号按单元里「参考图」的顺序；写好后 `rea-video plan` 会检查格式。",
+                 "> ⚠️ {u}: the prompts are still generic drafts. Rewrite them in {m}'s official format (or have the agent write them with that model's "
+                 "prompting skill) into `remake/prompts.json`, numbering images in the unit's reference order; `rea-video plan` then checks the format.",
+                 u="、".join(drafts), m=m) if drafts else "")
+        sub(T("AI 生成", "AI generation"), [f"**{plan['summary'].split(T('；', '; '))[0]}**", ""] + ([tip, ""] if tip else []) + pre + parts["units"])
     if parts.get("drive"):
         steps.append(T("**动作驱动**：舞蹈 / 动作镜头用原片当驱动，见下方「动作驱动」", "**Motion drive**: the dance / action shots are driven from the source, see “Motion drive” below"))
         sub(T("动作驱动", "Motion drive"), parts["drive"])
@@ -526,9 +527,19 @@ def _plan_md(b: dict) -> list[str]:
 
     head = ["", T("# 第二部分 · 复刻方案", "# Part two · Remake plan"), ""]
     if chosen and plan.get("units"):
+        from .generation import check_lines, strategy_name
+
+        it = b.get("intent") or {}
         head += [T("按 **{m}** 排的：{f}。换模型就换方案：`rea-video plan <拆解目录> --model <模型>`。",
                    "Planned for **{m}**: {f}. Another model gets its own plan: `rea-video plan <folder> --model <model>`.",
-                   m=plan.get("model_name") or plan.get("model"), f=model_facts(plan.get("model"))), ""]
+                   m=plan.get("model_name") or plan.get("model"), f=model_facts(plan.get("model"))), "",
+                 T("- 复刻范围：{g}", "- Scope: {g}", g=T("整条都用模型生成", "the whole video by model") if it.get("generate") == "all"
+                   else T("只生成原片里 AI 做的镜头，实拍的自己拍", "only the shots the source generated; filmed shots are filmed")),
+                 T("- 输入方式：{s}", "- Feed: {s}", s=strategy_name(plan.get("strategy", "")))]
+        head += [T("- 换：{f} → {t}", "- Swap: {f} → {t}", f=x["from"] or "—", t=x["to"] or T("参考图", "the reference image"))
+                 + (T("（有参考图）", " (with image)") if x.get("image") else "") for x in it.get("swaps") or []]
+        cs = plan.get("checks") or []
+        head += [""] + ([T("**方案检查**", "**Plan checks**"), ""] + check_lines(cs) if cs else [T("方案检查：没有问题。", "Plan checks: nothing to fix.")]) + [""]
     elif _units_needed(b):
         head += [T("> 还没选视频模型。AI 镜头怎么分段、一次能出多长、能不能直接拿原片当参考、提示词怎么写，每个模型都不一样，"
                    "所以这部分要按你实际用的模型来排：告诉 agent 你用哪个模型或平台（即梦 / Seedance、可灵、Veo、海螺……），"
@@ -1048,10 +1059,9 @@ def _shot_detail_md(r: dict) -> list[str]:
         L += [f"  - {e}" for e in measured[:8]]
     rep = r["replication"]
     L += ["", T("- 复刻：{n}", "- Remake: {n}", n=rep["note"])]
-    if rep.get("capsule", {}).get("image_prompt"):
-        L.append(T("  - 首帧图像提示词：{p}", "  - First-frame image prompt: {p}", p=rep["capsule"]["image_prompt"]))
-    if rep.get("capsule", {}).get("prompt"):
-        L.append(T("  - 视频提示词：{p}", "  - Video prompt: {p}", p=rep["capsule"]["prompt"]))
+    p = shot_prompts(r)
+    if p.get("video_prompt"):
+        L.append(T("  - 镜头描述（复核写的，生成提示词从它来）：{p}", "  - Shot description (from the review; the generation prompts start from it): {p}", p=p["video_prompt"]))
     return L
 
 
