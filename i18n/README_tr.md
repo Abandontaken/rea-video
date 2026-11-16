@@ -177,7 +177,7 @@ Gerçek materyal tespiti %97–99; elle etiketlenmiş dokuz klipte çekim sını
 
 ## Nasıl çalışır
 
-![rea-video iş akışı](../docs/rea-flow_en.svg)
+![rea-video iş akışı](../docs/rea-flow_tr.svg)
 
 1. Ayır: videoyu çekimlere böl ve sesi konuşma, müzik ve efektler olarak ayır.
 2. Kanıt topla: ölç (kare temposu, sensör gürültüsü, görüntünün tamamının tek bir düz düzlem gibi hareket edip etmediği, meta verideki AIGC etiketleri), bak (eller, yazılar, fizik) ve dinle (BPM, ton, şarkı mı konuşma mı).
