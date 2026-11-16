@@ -204,9 +204,16 @@ def _readers(b: dict) -> str:
     if any(r["base"]["decided_by"] == "user" for r in b["shots"]):
         bits.append(T("用户纠正", "user corrections"))
     out = " + ".join(bits)
-    if status in ("failed", "not_configured"):
+    if status in ("failed", "not_configured") and not rv.get("shots"):
         out += T("（AI 看图没有生效，只靠工具）", " (AI image reading did not run; tools only)")
     return out
+
+
+def _unseen(b: dict) -> bool:
+    """Nobody (no VLM, no reviewer, no user) looked at the picture: the kind of each shot is pixel statistics only."""
+    info, rv = b["analysis"]["vlm"], b["analysis"].get("review") or {}
+    looked = (info.get("status") or ("ok" if info.get("used") else "off")) in ("ok", "partial")
+    return not looked and not rv.get("shots") and not any(r["base"]["decided_by"] == "user" for r in b["shots"])
 
 
 def _mmss(sec: float) -> str:
@@ -233,6 +240,12 @@ def _head_md(b: dict) -> list[str]:
     L += ["", T("- {d} · {o} {ar} · {n} 个镜头，平均 {avg} 秒一个", "- {d} · {o} {ar} · {n} shots, {avg}s each on average",
                 d=_mmss(src["duration"]), o=orient, ar=src["aspect_ratio"], n=s["shots"], avg=f"{float(s['avg_shot_s']):.1f}"),
           T("- 判断可靠度 {c:.0%}，依据：{by}", "- Confidence {c:.0%}, based on: {by}", c=s["confidence"], by=_readers(b))]
+    if _unseen(b):
+        L.append(T("- ⚠️ **画面还没有人看过**：实拍 / AI / 3D / 代码渲染只靠像素统计，平台转码后经常整体判错。"
+                   "先开 VLM 或让 agent 看图复核（`rea-video review`），再按这份报告去复刻",
+                   "- ⚠️ **Nobody has looked at the picture yet**: live action / AI / 3D / code render come from pixel statistics only and are "
+                   "often wrong across the board after platform transcoding. Turn on a VLM or have an agent review the shots "
+                   "(`rea-video review`) before remaking from this report"))
     qs = entities.open_questions(b)
     if qs:
         L.append(T("- ⚠️ 有 {n} 处拿不准，见「不确定点」", "- ⚠️ {n} points are uncertain, see “Open questions”", n=len(qs)))
@@ -430,12 +443,22 @@ def _edit_md(b: dict) -> list[str]:
     return L
 
 
+def _units_needed(b: dict) -> bool:
+    """Shots a video model has to make (generated, or driven from the source motion)."""
+    p = b.get("production_plan") or {}
+    return bool(p.get("units") or p.get("drive"))
+
+
 def _plan_md(b: dict) -> list[str]:
     """The remake as one section: a short checklist, then the detail of each step in the same order."""
     from .production import report_parts
 
     plan = b.get("production_plan") or {}
     parts = report_parts(plan) if plan else {}
+    chosen = bool(b.get("engine_chosen"))
+    if not chosen:  # generation units, prompts and calls belong to a model the user has not picked yet
+        for k in ("units", "pre", "drive"):
+            parts.pop(k, None)
     steps: list[str] = []
     subs: list[str] = []
 
@@ -466,7 +489,14 @@ def _plan_md(b: dict) -> list[str]:
         pre = parts.get("pre", [])
         if pre:  # grouping rules, the model's prompt conventions, the input primer: needed when writing prompts, not to follow the steps
             pre = ["", f'<details class="ref"><summary>{html.escape(T("写提示词前看：分组规则、模型写法、能喂哪些输入", "Before writing prompts: grouping, the model's conventions, what it takes as input"))}</summary>', ""] + pre + ["", "</details>", ""]
-        sub(T("AI 生成", "AI generation"), [f"**{plan['summary'].split(T('；', '; '))[0]}**", ""] + pre + parts["units"])
+        m = plan.get("model_name") or T("视频模型", "the video model")
+        tip = T("> ⚠️ 下面的提示词是通用写法，按 {m} 的能力规划。不同模型的提示词写法不一样（分镜头怎么写、参考图怎么指代、台词怎么写、哪些写法会被忽略），"
+                "生成前按你实际用的模型的官方提示词指南改一遍，或者让 agent 用这个模型的提示词 skill 优化；换了模型，单次时长和能喂的图也要按新模型调。",
+                "> ⚠️ The prompts below are generic and planned for {m}. Every model reads prompts differently (how shots are split, how references are "
+                "addressed, how dialogue is written, what gets ignored). Before generating, rewrite them following the official prompt guide of the model "
+                "you actually use, or have the agent refine them with that model's prompting skill; with another model, also adjust the length per call "
+                "and the images it can take.", m=m)
+        sub(T("AI 生成", "AI generation"), [f"**{plan['summary'].split(T('；', '; '))[0]}**", "", tip, ""] + pre + parts["units"])
     if parts.get("drive"):
         steps.append(T("**动作驱动**：舞蹈 / 动作镜头用原片当驱动，见下方「动作驱动」", "**Motion drive**: the dance / action shots are driven from the source, see “Motion drive” below"))
         sub(T("动作驱动", "Motion drive"), parts["drive"])
@@ -492,9 +522,24 @@ def _plan_md(b: dict) -> list[str]:
         steps.append(T("**声音**：见「声音」，每处音效都能先试听", "**Sound**: see “Sound”; every effect can be played first"))
     steps.append(T("**对照检查**：成片和原片并排看一遍：镜头长短、字幕位置、音乐起落对不对得上",
                    "**Compare**: watch yours next to the original: shot lengths, subtitle positions, where the music comes in and drops"))
-    head = ["", T("## 自己复刻：按这个顺序做", "## Remake it yourself: do it in this order"), "",
-            T("复刻的是做法和节奏，不是照抄画面：保留每一段在讲什么，换成自己的内容和素材。",
-              "Copy the method and the rhythm, not the pictures: keep what each part does and fill it with your own content and material."), ""]
+    from .production import model_facts
+
+    head = ["", T("# 第二部分 · 复刻方案", "# Part two · Remake plan"), ""]
+    if chosen and plan.get("units"):
+        head += [T("按 **{m}** 排的：{f}。换模型就换方案：`rea-video plan <拆解目录> --model <模型>`。",
+                   "Planned for **{m}**: {f}. Another model gets its own plan: `rea-video plan <folder> --model <model>`.",
+                   m=plan.get("model_name") or plan.get("model"), f=model_facts(plan.get("model"))), ""]
+    elif _units_needed(b):
+        head += [T("> 还没选视频模型。AI 镜头怎么分段、一次能出多长、能不能直接拿原片当参考、提示词怎么写，每个模型都不一样，"
+                   "所以这部分要按你实际用的模型来排：告诉 agent 你用哪个模型或平台（即梦 / Seedance、可灵、Veo、海螺……），"
+                   "它会查这个模型的最新资料，跑 `rea-video plan <拆解目录> --model <模型>` 把方案补进来。",
+                   "> No video model chosen yet. How the AI shots are grouped, how long one call can be, whether the source can be fed as a "
+                   "reference and how prompts are written all differ by model, so this part is planned for the model you will use: tell the "
+                   "agent which model or platform (Seedance, Kling, Veo, Hailuo…); it looks the model up and runs "
+                   "`rea-video plan <folder> --model <model>` to fill this in."), ""]
+    head += [T("## 自己复刻：按这个顺序做", "## Remake it yourself: do it in this order"), "",
+             T("复刻的是做法和节奏，不是照抄画面：保留每一段在讲什么，换成自己的内容和素材。",
+               "Copy the method and the rhythm, not the pictures: keep what each part does and fill it with your own content and material."), ""]
     guide = playbook.md(b)
     if guide:
         return head + guide + subs
@@ -920,7 +965,6 @@ def _clock(t: float) -> str:
 
 
 def _shotlist_md(b: dict) -> list[str]:
-    units = _unit_of(b)
     told = narrative.shot_roles(b)
     rows = []
     for r in b["shots"]:
@@ -932,13 +976,13 @@ def _shotlist_md(b: dict) -> list[str]:
         pic = a.get("first_frame") or a.get("sheet")  # one frame reads at thumbnail size; the contact sheet is in the appendix
         rows.append([r["index"], f"![#{r['index']}]({pic})" if pic else "—", _clock(r["start"]), f"{r['duration']:.1f}s", *([says[:48] + ("…" if len(says) > 48 else "") or "—"] if told else []),
                      desc[:40] + ("…" if len(desc) > 40 else "") or "—", CAMERA_ZH.get(r["features"].get("camera", "unknown"), "—"), _layers(r),
-                     f"{base['label_zh']} {base['confidence']:.0%}", _origin(r, brief=True), _route(r, units)])
+                     f"{base['label_zh']} {base['confidence']:.0%}", _origin(r, brief=True)])
     return ["", T("## 分镜表", "## Shot list"), "",
             T("「画面」「运镜」「叠加层」是画面里看得到的；「制作方式」「素材来源」是工具推断的，依据见附录逐镜取证。",
               "Picture, Camera and Overlays are what is visible on screen; Made with and Material are the tools' inference, with the basis in the shot-by-shot appendix.")] + _table(
         ["#", T("截图", "Frames"), T("时间", "Time"), T("时长", "Length"), *([T("在讲什么", "What it says")] if told else []),
          T("画面", "Picture"), T("运镜", "Camera"), T("叠加层", "Overlays"),
-         T("制作方式（推断）", "Made with (inferred)"), T("素材来源（推断）", "Material (inferred)"), T("复刻", "Remake")], rows)
+         T("制作方式（推断）", "Made with (inferred)"), T("素材来源（推断）", "Material (inferred)")], rows)
 
 
 def _questions_md(b: dict) -> list[str]:
@@ -1035,8 +1079,12 @@ def _appendix_md(b: dict) -> list[str]:
 
 def markdown(b: dict) -> str:
     # what it is and why it works, how it is told and cut, how to remake it, then the reference detail
-    L = (_head_md(b) + _highlights_md(b) + _layers_md(b) + _content_md(b, user=True) + _shotlist_md(b) + _plan_md(b)
-         + _cast_md(b) + _visual_md(b, user=True) + packaging_md(b) + _audio_md(b) + _questions_md(b) + _appendix_md(b))
+    # part one is the breakdown (what is there and how it was made, the same whatever model you use); part two is the
+    # remake, planned for one model; the reference detail closes the report
+    part1 = ["", T("# 第一部分 · 拆解：这条视频的结构", "# Part one · Breakdown: how this video is built"), ""]
+    L = (_head_md(b) + part1 + _highlights_md(b) + _layers_md(b) + _content_md(b, user=True) + _shotlist_md(b)
+         + _cast_md(b) + _visual_md(b, user=True) + packaging_md(b) + _audio_md(b) + _questions_md(b)
+         + _plan_md(b) + _appendix_md(b))
     return re.sub(r"\n{3,}", "\n\n", "\n".join(L)).strip() + "\n"
 
 

@@ -141,6 +141,28 @@ def code_motion_md(scenes: list[dict]) -> list[str]:
     return L
 
 
+def model_facts(model_id: str | None) -> str:
+    """What the plan was built on, in one line: per-call length, multi-shot, reference inputs, native sound, and where
+    the facts come from and when they were checked (a model changes; the reader should see how fresh this is)."""
+    m = Planner().models.get(model_id or "")
+    if not m:
+        return T("能力地图里没有这个模型，按通用规则排", "not in the capability map; planned on generic rules")
+    lim, prim = m.get("limits") or {}, set(m.get("primitives") or [])
+    d, refs = lim.get("duration_s") or {}, lim.get("refs") or {}
+    rv = (lim.get("ref_video_s") or {}).get("max")
+    bits = [T("单次 ≤{s:g} 秒", "≤{s:g} s per call", s=d["max"]) if d.get("max") else "",
+            T("一次可出多个镜头", "several shots per call") if "video.multi_shot" in prim else T("一次一个镜头", "one shot per call"),
+            (T("能吃参考视频", "takes reference video") + (T("（{n} 段", " ({n} clips", n=refs["video"]) if refs.get("video") else "")
+             + (T("，总长 ≤{s:g} 秒", ", ≤{s:g} s in all", s=rv) if rv else "") + (T("）", ")") if refs.get("video") else ""))
+            if "video.reference_video" in prim else T("不吃参考视频", "no reference video"),
+            T("参考图 ≤{n} 张", "≤{n} reference images", n=refs["image"]) if refs.get("image") else "",
+            T("首尾帧", "first / last frame") if "video.i2v_first_last" in prim else "",
+            T("能直接出声", "native sound") if (m.get("audio") or {}).get("native") else ""]
+    v = m.get("verified") or {}
+    src = T("本地补充的资料", "your own entry") if m.get("local") else T("能力地图", "capability map")
+    return T("，", ", ").join(x for x in bits if x) + T("（{src}，核实于 {d}）", " ({src}, checked {d})", src=src, d=v.get("date") or "?")
+
+
 # ---------------------------------------------------------------- model choice
 def pick_model(planner: Planner, engine: str) -> tuple[dict | None, dict | None]:
     """-> (the user's engine as a capability entry, the model the generation units are planned for).
@@ -176,7 +198,12 @@ def prompting_md(notes: dict, full: bool = False) -> list[str]:
 def _limits(m: dict | None) -> dict:
     lim = (m or {}).get("limits") or {}
     d = lim.get("duration_s") or {}
-    return {"max": float(d.get("max") or 10), "min": float(d.get("min") or 0), "refs": lim.get("refs") or {},
+    refs = lim.get("refs") or {}
+    rv = (lim.get("ref_video_s") or {}).get("max")
+    return {"max": float(d.get("max") or 10), "min": float(d.get("min") or 0), "refs": refs,
+            # how much source footage one request can take as reference: the stated total, else one clip of
+            # REF_CLIP_S per reference-video slot
+            "ref_total": float(rv) if rv else REF_CLIP_S * max(1, int(refs.get("video") or 1)),
             "multi_shot": "video.multi_shot" in (m or {}).get("primitives", []),
             "ref_video": "video.reference_video" in (m or {}).get("primitives", []),
             "multi_ref": "video.multi_reference" in (m or {}).get("primitives", []),
@@ -190,9 +217,11 @@ def _limits(m: dict | None) -> dict:
 INPUT_ZH = LangDict({"text": "文字提示词", "first_frame": "首帧图", "last_frame": "尾帧图", "ref_image": "参考图", "ref_video": "参考视频"},
                     en={"text": "text prompt", "first_frame": "first frame", "last_frame": "last frame", "ref_image": "reference image",
                         "ref_video": "reference video"})
-METHOD_ZH = LangDict({"t2v": "文生视频", "i2v": "首帧图生视频", "first_last": "首尾帧生视频", "reference": "多参考生成"},
+METHOD_ZH = LangDict({"t2v": "文生视频", "i2v": "首帧图生视频", "first_last": "首尾帧生视频", "reference": "多参考生成",
+                      "remix": "参考原片改写"},
                      en={"t2v": "text to video", "i2v": "first-frame image to video", "first_last": "first + last frame to video",
-                         "reference": "multi-reference generation"})
+                         "reference": "multi-reference generation", "remix": "remix of the source clip"})
+REF_CLIP_S = 15.0  # one reference video: Seedance / Kling take clips up to about 15 s each
 
 
 def _fed(u: dict) -> str:
@@ -265,6 +294,23 @@ def _inputs(seg: list[dict], lim: dict, refs: list[dict], prev_id: str | None, p
     return method, out
 
 
+def _remix_inputs(refs: list[dict]) -> tuple[str, list[dict]]:
+    """A remix is fed the source clip (and product / people references when the video has them), never frames."""
+    vids = [r for r in refs if r["tag"].startswith("@视频")]
+    imgs = [r for r in refs if r["tag"].startswith("@图片")]
+    out = [{"kind": "text", "need": "yes", "source": T("见下面的提示词", "see the prompt below"),
+            "why": T("只写每个镜头换成什么，分镜和节奏交给参考视频", "says only what each shot becomes; the reference clip carries the shots and pacing")},
+           {"kind": "ref_video", "need": "yes", "source": semi().join(f"`{r['tag']}` " + r["what"].split("：")[0].split(": ")[0] for r in vids),
+            "why": T("模型照着它出同样的镜头切换、运镜和动作，一次出完这一段的所有镜头；`rea-video remake-plan` 会切好并擦掉字幕",
+                     "the model copies its cuts, camera and action and makes every shot of the stretch in one go; `rea-video remake-plan` cuts it and erases the subtitles")}]
+    if imgs:
+        out.append({"kind": "ref_image", "need": "yes", "source": semi().join(f"`{r['tag']}` " + r["what"] for r in imgs),
+                    "why": T("换成你的商品和人物，跨镜头长相一致", "your product and people, the same in every shot")})
+    out.append({"kind": "first_frame", "need": "no", "source": "—",
+                "why": T("参考视频模式下不收首帧，构图跟着参考视频走", "no first frame alongside a reference clip; framing follows the clip")})
+    return "remix", out
+
+
 INSERT_LABELS = CODE_LABELS + LOCAL_LABELS  # made separately and cut in during editing
 def reused_footage(gen: list[dict]) -> dict[int, int]:
     """Generated shots an image reader marked as the same clip as another generated shot (a trailer cut from the
@@ -280,7 +326,7 @@ def reused_footage(gen: list[dict]) -> dict[int, int]:
     return out
 
 
-def _runs(shots: list[dict], same_scene, labels: tuple, skip: set[int] | None = None) -> list[list[dict]]:
+def _runs(shots: list[dict], same_scene, labels: tuple, skip: set[int] | None = None, any_cut: bool = False) -> list[list[dict]]:
     """Runs of generated shots that may share one generation: same scene, joined by hard cuts. Shots cut in
     between them (UI, screenshots, stills) do not break a run: the generated shots are produced back to back
     and the inserts are placed in the edit, which is how a talk-plus-UI video is usually made."""
@@ -295,7 +341,7 @@ def _runs(shots: list[dict], same_scene, labels: tuple, skip: set[int] | None = 
                 runs.append(cur)
             cur, gap = [], False
             continue
-        joinable = cur and same_scene(cur[-1], r) and (gap or r.get("transition_in") in ("cut", "jump", "flash"))
+        joinable = cur and same_scene(cur[-1], r) and (gap or any_cut or r.get("transition_in") in ("cut", "jump", "flash"))
         if cur and not joinable:
             runs.append(cur)
             cur = []
@@ -331,6 +377,47 @@ def _split_run(run: list[dict], lim: dict, hard: dict, unit_min: float) -> list[
     return out[::-1]
 
 
+def _split_remix(run: list[dict], cap: float, new_scene: set[int], unit_min: float) -> list[list[dict]]:
+    """Units for a remix of the source: as few calls as the per-call cap allows (the source clip carries the cuts,
+    so there is no hard-cut guard and no same-scene rule), cutting at a scene change where there is a choice and
+    avoiding units under the shortest generation length. A single shot longer than the cap stays one unit (S02)."""
+    n = len(run)
+    best = [0.0] + [float("inf")] * n
+    prev = [0] * (n + 1)
+    for j in range(1, n + 1):
+        for i in range(j - 1, -1, -1):
+            seg = run[i:j]
+            dur = sum(r["duration"] for r in seg)
+            if len(seg) > 1 and dur > cap:
+                break
+            cut_mid_scene = i > 0 and run[i]["index"] not in new_scene
+            cost = 1.0 + (0.3 if cut_mid_scene else 0.0) + (0.2 if dur < unit_min else 0.0)
+            if best[i] + cost < best[j]:
+                best[j], prev[j] = best[i] + cost, i
+    out, j = [], n
+    while j > 0:
+        out.append(run[prev[j]:j])
+        j = prev[j]
+    return out[::-1]
+
+
+def _ref_clips(ranges: list[list[float]], each: float) -> list[list[list[float]]]:
+    """The unit's source ranges as reference clips of at most `each` seconds (a 30 s unit becomes @视频1 + @视频2)."""
+    clips, cur, used = [], [], 0.0
+    for a, z in ranges:
+        while z - a > 1e-3:
+            take = min(z - a, each - used)
+            cur.append([round(a, 3), round(a + take, 3)])
+            used += take
+            a += take
+            if used >= each - 1e-3:
+                clips.append(cur)
+                cur, used = [], 0.0
+    if cur:
+        clips.append(cur)
+    return clips
+
+
 def _style_line(shots: list[dict], aspect_ratio: str) -> str:
     """One style sentence for every unit (most common lighting reading across the generated shots, by duration),
     so separately generated units still look like one video."""
@@ -352,7 +439,7 @@ def _style_line(shots: list[dict], aspect_ratio: str) -> str:
 
 
 def _unit(seg: list[dict], k: int, lim: dict, model: dict | None, style: str, cast: dict, prev_unit: dict | None,
-          same_scene_prev: bool, unit_min: float) -> dict:
+          same_scene_prev: bool, unit_min: float, remix: bool = False) -> dict:
     t0, t1 = seg[0]["start"], seg[-1]["end"]
     dur = round(sum(r["duration"] for r in seg), 3)  # generated length; inserts cut in between are not generated
     ranges: list[list[float]] = []
@@ -378,7 +465,21 @@ def _unit(seg: list[dict], k: int, lim: dict, model: dict | None, style: str, ca
                                                       "character reference images (one frontal face + one half-body per character) so the look stays consistent across shots"), "user": True})
     # frame inputs and references cannot share a request on some models: a unit without product / people refs
     # goes the first / last frame way and gets no reference clip
-    if lim["ref_video"] and (not lim.get("exclusive") or product or people):
+    # a single shot longer than one call is made in parts; each part gets its own stretch of the source as @视频1
+    n_parts = int(-(-dur // lim["max"])) if remix and len(seg) == 1 and dur > lim["max"] else 1
+    each = min(REF_CLIP_S, lim["ref_total"])
+    for part in range(n_parts):
+        a0 = t0 + dur * part / n_parts
+        pr = [[a0, a0 + dur / n_parts]] if n_parts > 1 else ranges
+        for c, rr in enumerate(_ref_clips(pr, each) if remix else [], 1):
+            tag = f"@视频{c}"
+            tags.setdefault("video", tag)
+            refs.append({"tag": tag, "what": (T("第 {k} 次：", "call {k}: ", k=part + 1) if n_parts > 1 else "")
+                         + T("原片 {span}（擦掉字幕和贴纸）", "source clip {span} (subtitles and stickers erased)",
+                             span=join(f"{a:.1f}–{z:.1f}s" for a, z in rr))
+                         + T("：照它的分镜、运镜、动作和节奏生成", ": follow its shots, camera, action and pacing"), "user": False,
+                         "ranges": rr, "part": part + 1})
+    if not remix and lim["ref_video"] and (not lim.get("exclusive") or product or people):
         tags["video"] = "@视频1"
         span = join(f"{a:.1f}–{z:.1f}s" for a, z in ranges)
         refs.append({"tag": "@视频1", "what": T("原片 {span} 片段", "source clip {span}", span=span)
@@ -386,20 +487,28 @@ def _unit(seg: list[dict], k: int, lim: dict, model: dict | None, style: str, ca
                      + T("：参考动作、运镜和剪辑节奏（只作参考，不复制画面）",
                          ": reference for action, camera movement and cutting rhythm (reference only, do not copy the picture)"), "user": False})
     cont, chained = None, False
-    if prev_unit and same_scene_prev and seg[0].get("transition_in") in ("cut", "jump", "flash") and abs(prev_unit["ranges"][-1][1] - t0) < 1e-3:
+    if remix:
+        pass  # the reference clip carries composition and continuity; frame inputs cannot ride along on these models
+    elif prev_unit and same_scene_prev and seg[0].get("transition_in") in ("cut", "jump", "flash") and abs(prev_unit["ranges"][-1][1] - t0) < 1e-3:
         cont, chained = T("首帧用 {p} 的尾帧，接上动作", "first frame = last frame of {p}, continue the action", p=prev_unit["id"]), True
     elif lim["first_frame"]:
         cont = T("首帧：参照原片第 {i} 镜首帧（{f}）的构图出图", "first frame: generate an image matching the composition of source shot {i}'s first frame ({f})",
                  i=seg[0]["index"], f=seg[0]["assets"]["first_frame"]) + (T("，产品换成 @图片1", ", with the product replaced by @图片1") if product else "")
-    head = [style]
+    vids = "".join(dict.fromkeys(r["tag"] for r in refs if r["tag"].startswith("@视频")))
+    head = [T("{v} 是原片：照它的分镜生成，镜头数、每个镜头的时长、景别、机位、运镜、动作和剪辑节奏都跟它一致，只把画面内容换成下面逐镜写的",
+              "{v} is the source: follow its shots — the number of shots, each one's length, size, camera position, movement, action and "
+              "cutting rhythm — and change only what is in the picture, as written shot by shot below", v=vids)] if remix else []
+    head.append(style)
     if product:
         head.append(T("产品外观以 @图片1 为准，Logo 和细节保持一致", "Product appearance follows @图片1, keep the logo and details consistent"))
     if people:
         head.append(T("人物以 {t} 为准", "Characters follow {t}", t=tags["person"]))
-    if "video" in tags:
+    if "video" in tags and not remix:
         head.append(T("参考 @视频1 的动作、运镜和剪辑节奏", "Follow the action, camera movement and cutting rhythm of @视频1"))
-    if len(seg) > 1:
+    if len(seg) > 1 and not remix:
         head.append(T("镜头之间硬切", "Hard cuts between shots"))
+    if remix:
+        head.append(T("画面里不要出现字幕、文字和水印", "No subtitles, captions or watermarks in the picture"))
     lines, lines_en, missing, acting = [], [], [], []
     acc = 0.0
     for i, r in enumerate(seg, 1):
@@ -415,10 +524,14 @@ def _unit(seg: list[dict], k: int, lim: dict, model: dict | None, style: str, ca
                            "how": performance.ROUTE_ZH[performance.route_kind(act, r["base"]["label"])]})
         a, z = acc, acc + r["duration"]
         acc = z
-        lines.append(T("镜头{i}（{a:.1f}–{z:.1f}s）：{text}", "Shot {i} ({a:.1f}–{z:.1f}s): {text}", i=i, a=a, z=z, text=text) if len(seg) > 1 else text)
+        # a remix takes its timing from the reference clip: no seconds in the prompt (several models handle them badly)
+        if len(seg) > 1 and remix:
+            lines.append(T("镜头{i}：{text}", "Shot {i}: {text}", i=i, text=text))
+        else:
+            lines.append(T("镜头{i}（{a:.1f}–{z:.1f}s）：{text}", "Shot {i} ({a:.1f}–{z:.1f}s): {text}", i=i, a=a, z=z, text=text) if len(seg) > 1 else text)
         if p.get("video_prompt_en"):
             en = with_acting(p["video_prompt_en"], act, en=True)
-            lines_en.append(f"Shot {i} ({a:.1f}-{z:.1f}s): {en}" if len(seg) > 1 else en)
+            lines_en.append((f"Shot {i}: {en}" if remix else f"Shot {i} ({a:.1f}-{z:.1f}s): {en}") if len(seg) > 1 else en)
     parts = 1
     if len(seg) == 1 and dur > lim["max"]:
         parts = int(-(-dur // lim["max"]))
@@ -429,11 +542,15 @@ def _unit(seg: list[dict], k: int, lim: dict, model: dict | None, style: str, ca
             "mode": mode, "calls": parts, "model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")),
             "generate_s": max(dur, lim["min"], unit_min if len(seg) == 1 else 0), "refs": refs, "continuity": cont,
             "prompt": T("。", ". ").join(head) + T("。\n", ".\n") + "\n".join(lines),
-            "prompt_en": "\n".join(lines_en) if len(lines_en) == len(seg) else "",
+            "prompt_en": ("\n".join(lines_en) if len(lines_en) == len(seg) else ""),
             "image_prompt": with_acting(shot_prompts(seg[0]).get("image_prompt", ""), performance.of(seg[0]), image=True)}
     if acting:
         unit["acting"] = acting
-    unit["method"], unit["inputs"] = _inputs(seg, lim, refs, prev_unit["id"] if chained else None, parts)
+    if remix:
+        unit["method"], unit["inputs"] = _remix_inputs(refs)
+        unit["image_prompt"] = ""  # no first frame on this route
+    else:
+        unit["method"], unit["inputs"] = _inputs(seg, lim, refs, prev_unit["id"] if chained else None, parts)
     if missing:
         unit["prompt_missing"] = missing
     if parts > 1:
@@ -561,10 +678,15 @@ def production_plan(b: dict, out: Path, engine: str = "seedance2.0") -> dict:
 
     motion = dance.motion_indices(b)  # the moves are the point: driven from the source motion, not generated from frames
     units: list[dict] = []
-    for run in _runs(shots, same_scene, GEN_LABELS, skip=set(reused) | motion):
-        for segm in _split_run(run, lim, hard, unit_min):
+    # with a model that takes a reference video, the source clip itself is the storyboard: consecutive generated shots
+    # go in as few calls as the per-call length allows, the prompt only says what changes (what remakes in practice do)
+    remix = bool(lim["ref_video"])
+    cap = min(lim["max"], lim["ref_total"]) if remix else None
+    new_scene = {r["index"] for r in shots if not same_prev.get(r["index"], False)}
+    for run in _runs(shots, (lambda a, c: True) if remix else same_scene, GEN_LABELS, skip=set(reused) | motion, any_cut=remix):
+        for segm in (_split_remix(run, cap, new_scene, unit_min) if remix else _split_run(run, lim, hard, unit_min)):
             prev = units[-1] if units else None
-            units.append(_unit(segm, len(units) + 1, lim, model, style, cast, prev, same_prev.get(segm[0]["index"], False), unit_min))
+            units.append(_unit(segm, len(units) + 1, lim, model, style, cast, prev, same_prev.get(segm[0]["index"], False), unit_min, remix=remix))
     units.sort(key=lambda u: u["start"])
     for k, u in enumerate(units, 1):
         u["id"] = f"G{k}"
@@ -574,7 +696,7 @@ def production_plan(b: dict, out: Path, engine: str = "seedance2.0") -> dict:
             u.setdefault("reused", []).append({"shot": again, "from": src})
     plan: dict = {"model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")),
                   "model_limits": {k: lim[k] for k in ("max", "min", "multi_shot", "ref_video", "native_audio")},
-                  "rules": {"hardcut_s": hard, "same_scene_distance": thr}, "units": units}
+                  "rules": {"hardcut_s": hard, "same_scene_distance": thr, "mode": "remix" if remix else "frames", "cap_s": cap}, "units": units}
     gen_shots = sum(len(u["shots"]) for u in units)
     if units:
         calls = sum(u["calls"] for u in units)
@@ -779,10 +901,17 @@ def report_md(plan: dict) -> list[str]:
         L += [f"- {plan['engine_note']}"]
     if plan["units"]:
         lim = plan["model_limits"]
-        L += [T("- 分组规则：同场景、硬切相连的 AI 镜头合并为一次生成；单次 ≤{mx:.0f}s；单元内连续硬切尽量 ≤{p}s、最多 {m}s；在叠化/淡入淡出和换场景处切开",
-                "- Grouping: AI shots in the same scene joined by hard cuts are generated in one call; ≤{mx:.0f}s per call; "
-                "consecutive hard cuts inside a unit preferably ≤{p}s, at most {m}s; split at dissolves / fades and scene changes",
-                mx=lim["max"], p=plan["rules"]["hardcut_s"]["prefer"], m=plan["rules"]["hardcut_s"]["max"])]
+        if plan["rules"].get("mode") == "remix":
+            L += [T("- 分组规则：原片里连着的 AI 镜头连成一段，每段一次生成（单次 ≤{c:.0f}s），把这段原片当参考视频喂给模型，"
+                    "模型照它的分镜、运镜和节奏一次出完这段所有镜头；提示词只写每个镜头换成什么。段太长时优先在换场景处切开",
+                    "- Grouping: consecutive AI shots in the source form one stretch, generated in one call (≤{c:.0f}s) with that stretch of the "
+                    "source as the reference video; the model follows its shots, camera and pacing and makes them all at once, and the prompt "
+                    "says only what each shot becomes. A stretch that is too long is split at a scene change first", c=plan["rules"]["cap_s"])]
+        else:
+            L += [T("- 分组规则：同场景、硬切相连的 AI 镜头合并为一次生成；单次 ≤{mx:.0f}s；单元内连续硬切尽量 ≤{p}s、最多 {m}s；在叠化/淡入淡出和换场景处切开",
+                    "- Grouping: AI shots in the same scene joined by hard cuts are generated in one call; ≤{mx:.0f}s per call; "
+                    "consecutive hard cuts inside a unit preferably ≤{p}s, at most {m}s; split at dissolves / fades and scene changes",
+                    mx=lim["max"], p=plan["rules"]["hardcut_s"]["prefer"], m=plan["rules"]["hardcut_s"]["max"])]
         if plan.get("audio_note"):
             L.append(T("- 声音：{a}", "- Audio: {a}", a=plan["audio_note"]))
         if plan.get("overlay_note"):

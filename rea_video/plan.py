@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from .i18n import LangDict, T, join, model_name, semi
+from .util import LOG
 
 CAP = Path(__file__).resolve().parent / "capabilities"
 
@@ -69,7 +70,14 @@ AI_EDITS_EN = {  # (what was done, how) in English, same keys as AI_EDITS
     "object_edit": ("object added / removed / replaced", "after the shoot, change the object in frame with a video-editing model"),
     "beautify": ("beauty filter / face slimming", "the beauty tools in CapCut, beauty camera apps etc. are enough, no generative model needed"),
 }
-CAPSULE_ENGINES = {"seedance2.0": (4, 15), "minimax-h3": (4, 15)}
+def engine_range(engine: str | None, models: dict | None = None) -> tuple[int, int]:
+    """Seconds one call of this model can make (min, max), from the capability map; (4, 15) for a name it lacks."""
+    key = re.sub(r"[^a-z0-9]", "", str(engine or "").lower())
+    for m in (models if models is not None else Planner().models).values():
+        if re.sub(r"[^a-z0-9]", "", m["id"].lower()) == key:
+            d = (m.get("limits") or {}).get("duration_s") or {}
+            return int(d.get("min") or 1), int(d.get("max") or 15)
+    return 4, 15
 
 
 def shot_prompts(shot: dict) -> dict:
@@ -256,6 +264,13 @@ def CODE_STYLES() -> dict[str, tuple[str, str]]:
     }
 
 
+def user_capabilities() -> Path:
+    """Where a user's own capability entries live (models looked up after the shipped map was written)."""
+    from .memory import home
+
+    return home() / "capabilities"
+
+
 def _load(name: str):
     with (CAP / name).open(encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -266,11 +281,24 @@ class Planner:
         self.routing = _load("routing.yaml")
         self.rules = {r["id"]: r for r in self.routing["rules"]}
         self.models = {}
+        notes = _load("prompting.yaml") or {}
+        self.prompting: dict[str, dict] = notes.get("models") or {}   # how to write prompts for each model
         for f in sorted((CAP / "models").glob("*.yaml")):
             for m in (yaml.safe_load(f.read_text(encoding="utf-8")) or {}).get("models", []):
                 self.models[m["id"]] = m
-        notes = _load("prompting.yaml") or {}
-        self.prompting: dict[str, dict] = notes.get("models") or {}   # how to write prompts for each model
+        # the user's own entries (~/.rea-video/capabilities/models/*.yaml, written after looking a model up) win over
+        # the shipped map: same layout, plus an optional "prompting" block per model
+        for f in sorted((user_capabilities() / "models").glob("*.yaml")):
+            try:
+                doc = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+            except yaml.YAMLError as exc:
+                LOG.warning("skipping %s: %s", f, exc)
+                continue
+            for m in doc.get("models", []) if isinstance(doc, dict) else []:
+                if isinstance(m, dict) and m.get("id") and m.get("primitives"):
+                    self.models[m["id"]] = dict(m, local=str(f))
+                    if isinstance(m.get("prompting"), dict):
+                        self.prompting[m["id"]] = m["prompting"]
         self.keyframe_notes: list[str] = notes.get("keyframes") or []  # frame-picking practice shared by all models
 
     def edit_steps(self, edits: list | None) -> list[dict]:
@@ -321,7 +349,7 @@ class Planner:
             plan["references"] = refs
             plan["note"] += semi() + T("生成时作参考：", "references for generation: ") + join(dict.fromkeys(r["kind_zh"] for r in refs))
         if executor == "capsule_cinema":
-            lo, hi = CAPSULE_ENGINES.get(engine, (4, 15))
+            lo, hi = engine_range(engine, self.models)
             gen_dur = int(min(hi, max(lo, round(dur + 0.49))))
             rep = shot_prompts(shot)
             prompt = rep.get("video_prompt") or (shot.get("vlm") or shot.get("review") or {}).get("description") or ""

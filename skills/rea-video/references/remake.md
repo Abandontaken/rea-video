@@ -19,7 +19,7 @@
 
 ## 各类镜头怎么复刻
 
-- **AI 类镜头**：用原镜头首尾帧加 VLM 提示词，通过 [capsule-cinema](https://github.com/JuneYaooo/capsule-cinema) 生成（会计费，先 `--dry-run`，并征得用户同意）。
+- **AI 类镜头**：模型能吃参考视频时（Seedance、Kling 等），默认「参考原片改写」：原片里连着的 AI 镜头连成一段，每段一次生成（不超过模型单次上限），这段原片擦掉字幕后当 `@视频1`，模型照它的分镜和节奏出完这段的镜头，提示词只写每个镜头换成什么。不能吃参考视频的模型才用首尾帧逐段生成。可以通过 [capsule-cinema](https://github.com/JuneYaooo/capsule-cinema) 自动跑（会计费，先 `--dry-run`，并征得用户同意）。
 - **静态图推拉、静帧**：本地按测得的运动参数重建。
 - **代码渲染**：先跑 `rea-video code-remake out/ref`。它按拆片包 `frames/` 里每个场景的采样点或抠图、测得的运动和背景光，写出 `out/ref/code/`（`spec.json` 每个场景一项、`render.py` 渲染器、`overlays.ass` 文字），逐场景把量和亮度对齐原片，渲染出 `code/remake.mp4`，再和原片打分。
   - 往下改都从这一版开始：先改 `spec.json` 里的数（粒子数 `count`、大小 `dot`、亮度 `gain`、运动 `motion`、背景光 `glow`）；要换成新形状，就把 `points` 换成自己的点文件；要做原片没有的效果再改 `render.py`，或照着它改写成 Remotion / Three.js。改完重跑同一条命令，改过的 `spec.json` 会保留，`--reset` 才会从头重建。`python code/render.py --frame 12.5` 可以只出一帧来看。
@@ -30,17 +30,18 @@
 - **表演和情绪**：报告「表演与情绪」一节逐镜写了情绪、表情、动作和语气，生成单元的提示词里已经带上表情和动作。改写提示词时保留看得见的表情和动作，不要换成「开心」「难过」这类词，也不要把幅度写大；有台词的镜头先做有语气的配音，再让画面跟着声音演。
 - **声音**：TTS（按脚本表里每句的语气）、BGM（按 BPM / 调性 / 情绪）、音效（按时间点）三条轨分别准备。
 - **剪辑包装（字幕、花字、贴纸）**：不进生成。生成模型只出干净的人和画面，包装层最后按「剪辑包装层」的时间轴叠上去，这样字不会被模型画糊，换文案时也只改包装层。
-  - 首尾帧上带着原片字幕的，`remake-plan` 的任务里有 `overlays_in_frames` 和警告：先擦掉字再当参考图，否则生成画面会照抄原字幕。
+  - 参考视频由 `remake-plan` 切好放在 `remake/refs/`，字幕、花字和常驻文字已经擦掉；首尾帧路线的任务里有 `overlays_in_frames` 警告，先擦掉字再当参考图。
+  - 用户自己的商品图、人物图写进 `remake/refs.json`（`{"@图片1": "绝对路径"}`），没给的那句参考会从提示词里去掉。
   - 换文案时，花字和贴纸按报告里的「按台词定位」放到新文案的对应句子上，不沿用原秒数；「常驻图层」整段叠一次。
 
 **用户自己拍的素材、或在网页上手动生成的视频，拼回原时间线**（不需要 capsule-cinema）：
 
 1. 按分镜表（`report.md` 的镜头号和时长）把素材对应到镜头。一条长素材覆盖多个镜头时，先用 ffmpeg 按动作切开；拿不准对应关系时给用户看截图确认。
-2. 写进 `out/ref/remake/mine.json`：`{"results": {"<镜头号>": {"video": "<素材绝对路径>"}, ...}}`。手动生成的「生成单元」视频覆盖多个镜头时，同样先按单元提示词里的「镜头i（a–b s）」时间切开再填。
+2. 写进 `out/ref/remake/mine.json`：`{"results": {"<镜头号>": {"video": "<素材绝对路径>"}, ...}}`。手动生成的「生成单元」视频覆盖多个镜头时，写成 `{"G2": {"unit": "G2", "shots": [4, 5, 6], "video": "<路径>", "trim_to": <单元秒数>}}`，`remake` 会按原片切点拆回各个镜头。
 3. `rea-video remake out/ref`：每段素材整段变速塞进原镜头时长（最多快 3 倍、慢 1.25 倍，超出部分再裁），切点和原片对齐，没填的镜头暂时用原片占位，声音沿用原片；输出 `remake/remake.mp4`、左右对比的 `remake/compare.mp4` 和 `remake/status.md`。告诉用户哪些镜头还是原片占位、声音还要换。只想拼不想重画代码镜头时用 `rea-video assemble out/ref/breakdown.json <results.json 路径>`。
    - 字幕叠回（`remake` 默认叠，`assemble` 要加 `--overlays`）：把测得的字幕 / 花字 / 标题按原样式叠到换掉的镜头上（原片占位的镜头本来就有字，不重复叠）。字体是通用无衬线体，颜色和底框是测量值，可能和原片有出入；贴纸只在 `assemble_log.json` 的 `stickers_to_add` 里列出来，要自己找素材贴。
 
-**自动生成的限制**：`remake-plan` 和 capsule-cinema 目前还是一个镜头调一次模型；报告里「生成单元」的多镜头提示词要用户手动贴到支持多镜头的模型（如即梦 / Seedance 2.5）上用。向用户说明这一点，并给出两种做法的调用次数。
+**自动生成**：`remake-plan` 照报告第二部分的方案出任务（用户选的模型、这个模型的真实上限），一个单元一次调用（参考视频 + 参考图 + 提示词），`remake-run` 交给 capsule-cinema 跑完，`remake` 按原片切点拆回各镜头。方案不迁就执行端：capsule-cinema 还没接的模型会在 `remake-run` 时报错，这时把单元提示词和 `remake/refs/` 里的参考视频交给用户在模型自己的平台上生成。
 
 ## 对接 capsule-cinema
 
@@ -48,8 +49,8 @@
 
 ```bash
 CC=$CAPSULE_CINEMA_ROOT   # capsule-cinema 仓库路径
-rea-video remake-plan out/ref/breakdown.json --capsule-root $CC --engine seedance2.0   # 也可以 --mode image_to_video / --labels ai_video
-rea-video remake-run out/ref/remake/jobs.json --dry-run      # 先给用户看任务和费用
+rea-video remake-plan out/ref/breakdown.json --capsule-root $CC --engine seedance2.0   # 参考原片改写；--labels ai_video 只做 AI 镜头
+rea-video remake-run out/ref/remake/jobs.json --dry-run      # 先给用户看任务和费用；--only G2 只跑一个单元
 rea-video remake-run out/ref/remake/jobs.json                # 用户确认后再跑
 rea-video assemble out/ref/breakdown.json out/ref/remake/results.json                   # 拼回原时间线 + compare.mp4
 rea-video capsule-draft out/ref/breakdown.json --capsule-root $CC --capsule-name xxx [--write-capsule]
