@@ -104,7 +104,7 @@ def _proxy_map() -> dict:
 
     env = urllib.request.getproxies_environment()
     if os.name != "nt" or set(env) != {"no"}:
-        return env
+        return urllib.request.getproxies()
     try:
         registry = urllib.request.getproxies_registry()
     except Exception:  # pragma: no cover - registry lookups are best effort
