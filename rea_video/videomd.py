@@ -36,7 +36,8 @@ OVERLAY_ID = {"huazi": "styled_text"}
 # shot-boundary kinds from the cut detector -> transition ids in the spec (`x-` = not in the taxonomy); plain cuts are not written
 TRANSITION_ID = {"jump": "jump_cut", "fade": "fade_through", "dissolve": "dissolve", "wipe": "wipe", "flash": "flash",
                  "slide": "slide", "whip": "whip", "zoom": "zoom", "spin": "spin", "blur": "x-blur", "glitch": "glitch",
-                 "shake": "x-shake", "effect": "x-effect", "mg_transition": "x-mg_transition"}
+                 "shake": "x-shake", "effect": "x-effect", "mg_transition": "x-mg_transition",
+                 "morph": "x-morph", "match": "x-match"}
 
 # timeline keys, in line order; `~` = inferred by the tools
 KEYS = ("story", "seen", "act", "layers", "camera", "transition", "overlay", "made~", "material~", "remake", "flag")
@@ -90,7 +91,8 @@ _TRANSITION_WORDS = {"jump_cut": ("跳切", "jump cut"), "fade_through": ("黑�
                      "wipe": ("划像", "wipe"), "flash": ("闪白", "flash"), "slide": ("推移", "slide"), "whip": ("甩镜", "whip pan"),
                      "zoom": ("缩放转场", "zoom"), "spin": ("旋转转场", "spin"), "x-blur": ("模糊转场", "blur"), "glitch": ("故障转场", "glitch"),
                      "x-shake": ("抖动转场", "shake"), "x-effect": ("转场特效", "transition effect"),
-                     "x-mg_transition": ("版式切换", "layout change")}
+                     "x-mg_transition": ("版式切换", "layout change"), "x-morph": ("形变转场", "morph"),
+                     "x-match": ("匹配剪辑", "match cut")}
 
 
 def _transition_in(r: dict) -> dict:
@@ -175,6 +177,7 @@ def _shot_file(r: dict) -> str:
                      "decided_by": DECIDED_BY.get(base["decided_by"], base["decided_by"]), "real_material": bool((r.get("material") or {}).get("has_real_material"))},
         "flags": [k for k in ("uncertain", "disputed") if base.get(k)] + (["low_confidence"] if base["confidence"] < 0.6 and base["decided_by"] != "user" else []),
         **({"transition_in": _transition_in(r)} if _transition_in(r) else {}),
+        **({"keyframes": [[k["t"], k.get("role", "")] for k in r["keyframes"]]} if r.get("keyframes") else {}),
         "frames": {k: v for k, v in (("sheet", assets.get("sheet")), ("first", assets.get("first_frame")), ("last", assets.get("last_frame"))) if v},
     }
     title = T("# 镜头 {i} · {a}–{z}s · {v}", "# Shot {i} · {a}–{z}s · {v}", i=r["index"], a=f"{r['start']:.1f}", z=f"{r['end']:.1f}", v=r.get("verdict", ""))
@@ -191,10 +194,51 @@ def _topics(b: dict) -> list[tuple[str, str, str, list[str]]]:
         ("content", T("内容与结构", "Content and structure"), T("要讲什么、叙事线、结构时间轴、台词", "what it says, the narrative line, structure, the script"), _content_md(b)),
         ("cast", T("角色、场景与道具", "Cast, scenes and props"), T("做角色参考图、写首帧提示词", "reference images for characters, first-frame prompts"), _cast_md(b)),
         ("sound", T("声音", "Sound"), T("人声、BGM、音效、节拍和来源", "voice, music, sound effects, beats and sources"), _audio_md(b)),
+        ("rhythm", T("节奏与关键帧", "Rhythm and key frames"), T("切点和转场的时间、镜头长度、画面变化曲线、每镜关键帧", "when cuts and transitions happen, shot lengths, the change curve, key frames of each shot"), rhythm_md(b)),
         ("look", T("拍法、打光与剪辑", "Camera, lighting and editing"), T("有实拍镜头时：景别、机位、布光、器材", "for filmed shots: framing, camera, lighting, kit"), _visual_md(b)),
         ("packaging", T("剪辑包装", "Packaging"), T("字幕、花字、贴纸、画中画的时间和样式", "subtitles, styled text, stickers, picture-in-picture: timing and style"), packaging_md(b)),
         ("remake", T("复刻方案", "Remake plan"), T("生成单元、拍摄场次、代码合成、要准备的真实素材、表演与情绪", "generation units, shoots, code builds, real material to collect, acting and emotion"), _remake_md(b)),
     ]
+
+
+KEY_ROLE_WORDS = {"first": ("首帧", "first"), "last": ("尾帧", "last"), "move_start": ("动作开始", "move starts"),
+                  "move_end": ("动作到位", "move ends"), "extreme": ("转折 / 极值", "turn / extreme"), "enter": ("元素出现", "element in"),
+                  "exit": ("元素离开", "element out"), "framing": ("构图变化", "framing change"), "expression": ("表情峰值", "expression peak"),
+                  "transition_mid": ("转场中段", "mid-transition"), "light": ("颜色光线突变", "colour / light change"),
+                  "beat": ("卡点", "on the beat"), "missed": ("补的关键帧", "added key frame"), "change": ("画面变化", "change")}
+
+
+def _curve(vals: list[float], every: float, per: float = 0.5) -> str:
+    """The change curve as one digit (0-9) per `per` seconds: the rhythm at a glance, a few tokens per second."""
+    k = max(1, int(round(per / every)))
+    return "".join(str(min(9, int(max(vals[i:i + k]) * 10))) for i in range(0, len(vals), k))
+
+
+def rhythm_md(b: dict) -> list[str]:
+    """Cuts, transitions, shot lengths, the change curve and every shot's key frames, with times."""
+    rh, sv = b.get("rhythm") or {}, b.get("survey") or {}
+    if not rh and not any(r.get("keyframes") for r in b.get("shots", [])):
+        return []
+    out = [T("# 节奏与关键帧", "# Rhythm and key frames"), ""]
+    if rh:
+        out += [T("每分钟 {n} 刀，平均镜头 {m}s；镜头长度：{l}", "{n} cuts a minute, mean shot {m}s; shot lengths: {l}",
+                  n=rh.get("cuts_per_min"), m=rh.get("mean_shot_s"), l=" ".join(f"{x:.1f}" for x in rh.get("shot_lengths", []))), ""]
+        if rh.get("change"):
+            out += [T("画面变化曲线（每 0.5 秒一位，0 静止 – 9 全变）：", "Change curve (one digit per 0.5 s, 0 still – 9 all new):"),
+                    "", f"`{_curve(rh['change'], float(rh.get('change_step_s') or 0.25))}`", ""]
+    if sv.get("cuts"):
+        out += [T("## 切点和转场", "## Cuts and transitions"), ""]
+        for c in sv["cuts"]:
+            span = c.get("span") or [c["t"], c["t"]]
+            dur = f" {span[1] - span[0]:.2f}s" if span[1] > span[0] and c.get("kind", "cut") not in ("cut", "jump") else ""
+            out.append(f"- {c['t']:.2f}s {c.get('kind', 'cut')}{dur}" + (T("（待确认）", " (to confirm)") if c.get("unsure") else ""))
+        out.append("")
+    rows = [(r["index"], r["keyframes"]) for r in b.get("shots", []) if r.get("keyframes")]
+    if rows:
+        out += [T("## 每镜关键帧", "## Key frames per shot"), ""]
+        for i, kf in rows:
+            out.append(f"- #{i}: " + ", ".join(f"{k['t']:.2f}s {T(*KEY_ROLE_WORDS.get(k.get('role', ''), (k.get('role', ''), k.get('role', ''))))}" for k in kf))
+    return out
 
 
 def _has_body(text: str) -> bool:

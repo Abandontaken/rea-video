@@ -159,11 +159,11 @@ def _span(a, z) -> str:
 
 TRANS_ZH = LangDict({"cut": "硬切", "jump": "跳剪", "flash": "闪亮切", "fade": "淡入淡出", "dissolve": "叠化", "wipe": "划像",
                      "slide": "推移", "whip": "甩镜", "zoom": "缩放转场", "spin": "旋转转场", "blur": "模糊转场", "glitch": "故障转场",
-                     "shake": "抖动转场", "effect": "转场特效", "mg_transition": "版式切换"},
+                     "shake": "抖动转场", "effect": "转场特效", "mg_transition": "版式切换", "morph": "形变转场", "match": "匹配剪辑"},
                     en={"cut": "cut", "jump": "jump cut", "flash": "flash cut", "fade": "fade", "dissolve": "dissolve", "wipe": "wipe",
                         "slide": "slide", "whip": "whip pan", "zoom": "zoom transition", "spin": "spin transition",
                         "blur": "blur transition", "glitch": "glitch transition", "shake": "shake transition",
-                        "effect": "transition effect", "mg_transition": "layout change"})
+                        "effect": "transition effect", "mg_transition": "layout change", "morph": "morph", "match": "match cut"})
 # which way a transition moves: the direction the edge or the picture travels
 TRANS_DIR_ZH = LangDict({"left": "向左", "right": "向右", "up": "向上", "down": "向下", "diagonal": "斜向", "center_out": "从中心展开",
                          "edges_in": "向中心收拢"},

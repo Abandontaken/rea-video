@@ -142,22 +142,42 @@ def sample_points(bgr: np.ndarray, n: int = 4000, text_boxes: list | None = None
              round(float(wts[i]) / top, 2)] for i in pick]
 
 
+CUTOUT_FROM, CUTOUT_FULL = 6.0, 30.0  # Lab distance from the ground where a pixel starts to belong to the picture / fully does
+
+
 def cutout(bgr: np.ndarray, text_boxes: list | None = None) -> np.ndarray:
-    """The drawn layer as an RGBA image (BGRA for OpenCV): the frame's colours, alpha by how strongly each pixel
-    stands out from the smooth background; text left out."""
-    c = np.clip(contrast(bgr) / 100.0, 0, 1)
-    c[~cv2.dilate(layer_mask(bgr, text_boxes).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)] = 0
+    """Everything drawn over the ground as an RGBA image (BGRA for OpenCV): the frame's colours, alpha by how far each
+    pixel is from the ground colour (a big flat fill counts as much as its outline) or how much it stands out from
+    the smooth background, whichever is more; text left out. The renderer lays it over the ground."""
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    g = cv2.cvtColor(ground(bgr).astype(np.uint8)[None, None], cv2.COLOR_BGR2LAB).astype(np.float32)[0, 0]
+    far = (np.linalg.norm(lab - g, axis=2) - CUTOUT_FROM) / (CUTOUT_FULL - CUTOUT_FROM)
+    c = np.clip(np.maximum(far, contrast(bgr) / 100.0), 0, 1)
+    h, w = c.shape
+    for x, y, bw, bh in text_boxes or []:
+        pad = 0.01
+        c[int(max(0, y - pad) * h):int(min(1, y + bh + pad) * h + 1), int(max(0, x - pad) * w):int(min(1, x + bw + pad) * w + 1)] = 0
     return np.dstack([bgr, (c * 255).astype(np.uint8)])
 
 
 def _text_boxes(out: Path, b: dict) -> list[tuple[float, float, list]]:
     """Where text sits and when: every OCR read stored on the shots, plus the packaging timeline once it is written
     (decompose measures the layer before that file exists)."""
-    boxes = [(float(it["t"]) - 0.6, float(it["t"]) + 0.6, it["bbox"]) for s in b.get("shots", [])
-             for it in (s.get("text") or {}).get("items", []) if it.get("bbox") and it.get("t") is not None]
+    # reads the packaging layer judged to be the picture itself (a shape read as a letter, writing drawn into the
+    # scene) are drawing, not text to leave out; so are lone characters, which shapes and faces often read as
+    cues = list((b.get("packaging") or {}).get("text_cues", []))
     tl = out / "packaging" / "timeline.json"
     if tl.exists():
-        boxes += [(float(x["t0"]), float(x["t1"]), x["bbox"]) for x in read_json(tl).get("text", []) if x.get("bbox")]
+        cues += read_json(tl).get("text", [])
+    drawn = [(float(c["t0"]) - 0.6, float(c["t1"]) + 0.6, str(c.get("text", "")).strip()) for c in cues if c.get("part_of_picture")]
+
+    def is_text(it: dict) -> bool:
+        txt, t = str(it.get("text", "")).strip(), float(it["t"])
+        return len(txt) > 1 and not any(a <= t <= z and txt == w for a, z, w in drawn)
+
+    boxes = [(float(it["t"]) - 0.6, float(it["t"]) + 0.6, it["bbox"]) for s in b.get("shots", [])
+             for it in (s.get("text") or {}).get("items", []) if it.get("bbox") and it.get("t") is not None and is_text(it)]
+    boxes += [(float(x["t0"]), float(x["t1"]), x["bbox"]) for x in cues if x.get("bbox") and not x.get("part_of_picture")]
     return boxes
 
 

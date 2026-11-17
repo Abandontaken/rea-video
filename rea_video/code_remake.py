@@ -38,7 +38,9 @@ def build_spec(out: Path) -> dict:
     b = read_json(out / "breakdown.json")
     src = b.get("source") or {}
     fdir = out / "frames"
-    if not (fdir / "scenes.json").exists():
+    want = sorted(s.get("index") for s in b.get("shots", []) if shot_label(s) == "code_render")
+    have = sorted({sc.get("shot") for sc in read_json(fdir / "scenes.json").get("scenes", [])}) if (fdir / "scenes.json").exists() else None
+    if have is None or have != want:  # the labels changed since (a review, the survey): measure the shots they name now
         scene_frames(out, breakdown=b)
     scenes = read_json(fdir / "scenes.json").get("scenes", [])
     shots = {s.get("index"): s for s in b.get("shots", [])}
@@ -101,7 +103,7 @@ def match(out: Path, spec_path: Path, rounds: int = 5) -> list[dict]:
             if e["draw"] == "points" and got["cover"] > 0 and want["cover"] > 0:
                 e["count"] = int(np.clip(e["count"] * (want["cover"] / got["cover"]) ** 0.9, 150, 40000))
             # amount first: brightness also moves how much stands out, so it is matched only once the count settles
-            if k >= rounds // 2 and got["lit"] > 0 and want["lit"] > 0:
+            if e["draw"] == "points" and k >= rounds // 2 and got["lit"] > 0 and want["lit"] > 0:  # a cut-out keeps its own colours
                 e["gain"] = round(float(np.clip(e["gain"] * want["lit"] / got["lit"], 0.5, 4.0)), 3)
             if e.get("glow") and got["rest"] > 1 and want["rest"] > 1:
                 e["glow"]["strength"] = round(float(np.clip(e["glow"]["strength"] * want["rest"] / got["rest"], 0.2, 3.0)), 3)

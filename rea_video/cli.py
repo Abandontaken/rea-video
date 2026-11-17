@@ -87,10 +87,40 @@ def cmd_decompose(args) -> int:
     b = decompose(args.video, out, use_vlm=use_vlm, whole_vlm=not args.no_whole, ocr=not args.no_ocr,
                   workers=args.workers, engine=args.engine or pref("engine"), platform_meta=meta, stems=stems,
                   packaging=not args.no_packaging, lang=lang, asr=not args.no_asr, max_shots_vlm=max(1, args.max_vlm_shots),
-                  speakers=not args.no_speakers)
+                  speakers=not args.no_speakers, survey=not args.no_survey)
     print(json.dumps({"out": str(out), "verdict": b["summary"]["verdict"], "shots": b["summary"]["shots"],
                       "confidence": b["summary"]["confidence"], "vlm": b["summary"]["vlm"],
                       "report": str(out / "report.html")}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_survey(args) -> int:
+    from .media import video_info
+    from .memory import pref
+    from .shots import build_track, detect_shots
+    from .survey import run, vlm_asker
+
+    out = Path(args.out) if args.out else Path("out") / Path(args.video).stem
+    info = video_info(args.video)
+    track = build_track(str(args.video), info)
+    asker = None
+    if args.vlm or (pref("vlm") == "on" and not args.no_vlm):
+        _check_vlm_config()
+        from .vlm import VLMClient, VLMConfig, prompt_lang_note
+
+        cfg = VLMConfig.from_env()
+        if cfg is None:
+            raise SystemExit("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL）")
+        asker = vlm_asker(VLMClient(cfg, out / "vlm_cache"), prompt_lang_note())
+    res = run(Path(args.video).expanduser().resolve(), out.expanduser().resolve(), track, detect_shots(track), info,
+              asker=asker, workers=args.workers, detail=not args.no_detail)
+    if res["status"] == "waiting":
+        res["next"] = T("看 images 里的图，按 tasks 里的问题把答案写进 waiting 里的文件（各文件互不相关，可以并发），再运行同一条命令",
+                        "look at the images, answer the questions in tasks into the waiting files (independent: can run in parallel), then run the same command again")
+    else:
+        res["next"] = T("运行 rea-video decompose（同一个 -o），镜头按这次的切点切分，关键帧和节奏写进报告",
+                        "run rea-video decompose (same -o): shots follow these cuts, key frames and rhythm go into the report")
+    print(json.dumps(res, ensure_ascii=False, indent=1))
     return 0
 
 
@@ -695,6 +725,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--no-asr", action="store_true", help="不做本地语音识别（装了 rea-video[asr] 才会做：在人声干声上识别台词和时间，首次使用下载约 160 MB 模型）")
     d.add_argument("--asr-lang", choices=ASR_LANGS, help="台词的语言：auto（默认，SenseVoice 自动识别中/英/日/韩/粤）、bn 孟加拉语（换用孟加拉语识别模型，首次使用自动下载约 90 MB）；也可用 prefs asr_lang 设成默认")
     d.add_argument("--no-speakers", action="store_true", help="不区分说话人（装了 rea-video[asr] 才会做：在人声干声上分出谁在什么时候说话，多人时每人输出一条 stems/voice_S1.wav；首次使用下载约 35 MB 模型）")
+    d.add_argument("--no-survey", action="store_true", help="开 VLM 时也不做总览 + 局部细看（只用切镜检测器的切点）")
     d.add_argument("--no-stems", action="store_true", help="不做人声/配乐分离（默认会输出 stems/original.wav、vocals.wav、music.wav）")
     d.set_defaults(func=cmd_decompose)
 
@@ -817,6 +848,15 @@ def main(argv: list[str] | None = None) -> int:
     pd = sub.add_parser("pdf", help="把 report.html 打印成 report.pdf（用本机的 Chrome / Chromium / Edge，折叠内容全部展开）")
     pd.add_argument("out_dir")
     pd.set_defaults(func=cmd_pdf)
+
+    sv = sub.add_parser("survey", help="先看全片总览再局部细看：定切点、转场和每镜关键帧（JEV 格式问答）；decompose 会按结果切镜")
+    sv.add_argument("video")
+    sv.add_argument("-o", "--out")
+    sv.add_argument("--vlm", action="store_true", help="用配置的 VLM 自动回答每一轮（同一轮的任务并发）")
+    sv.add_argument("--no-vlm", action="store_true", help="本次不用 VLM（覆盖 prefs 里的 vlm=on）：输出任务，由能看图的 agent 回答")
+    sv.add_argument("--no-detail", action="store_true", help="只定切点，不逐镜挑关键帧")
+    sv.add_argument("--workers", type=int, default=4, help="VLM 并发数")
+    sv.set_defaults(func=cmd_survey)
 
     rv = sub.add_parser("review", help="能看图的 agent 当 VLM：生成逐镜看图任务和答案模板")
     rv.add_argument("out_dir", help="decompose 的输出目录")

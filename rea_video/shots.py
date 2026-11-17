@@ -479,3 +479,43 @@ def _steady_morph(thumbs: list[np.ndarray], i: int, k: int) -> bool:
     mid = rate(i - k, i + k)
     around = [r for r in (rate(i - 3 * k, i - k), rate(i + k, i + 3 * k)) if r is not None]
     return bool(mid and around and mid < 1.3 * max(around))
+
+
+def shots_from_cuts(track: FrameTrack, detected: list[Shot], cuts: list[dict], min_frames: int = 2) -> list[Shot]:
+    """Shots bounded by the survey's scene changes (survey/timeline.json `cuts`: frame, kind, span). A boundary the
+    detector also found keeps its measured transition; beats move to the shot they fall in."""
+    n = track.n
+    by_frame = {s.start_frame: s for s in detected[1:]}
+    edges: list[tuple[int, dict]] = []
+    for c in sorted(cuts, key=lambda c: int(c["frame"])):
+        f = int(c["frame"])
+        if min_frames <= f <= n - min_frames and (not edges or f - edges[-1][0] >= min_frames):
+            edges.append((f, c))
+    beats = sorted(b for s in detected for b in s.beats)
+    shots: list[Shot] = []
+    start, trans, score, tdict = 0, "start", 0.0, {}
+    for f, c in edges + [(n, {})]:
+        sh = Shot(index=len(shots) + 1, start_frame=start, end_frame=f, fps=track.fps, transition_in=trans, boundary_score=score,
+                  times=track.times)
+        sh.transition = tdict
+        shots.append(sh)
+        if c:
+            old = by_frame.get(f)
+            kind = c.get("kind") or "cut"
+            if old is not None and kind in ("cut", "effect"):
+                trans, score, tdict = old.transition_in, old.boundary_score, dict(old.transition)
+            else:
+                trans, score = kind, float(c.get("p") or 0.5)
+                span = c.get("span") or []
+                def at(t: float) -> int:
+                    if track.times is not None and len(track.times):
+                        return int(np.clip(np.searchsorted(track.times, t - 1e-6), 0, n - 1))
+                    return int(np.clip(round(t * track.fps), 0, n - 1))
+                a, z = (at(span[0]), at(span[1])) if len(span) == 2 and span[1] > span[0] else (f, f)
+                tdict = {"type": kind, "by": c.get("by", "survey"), "start_frame": max(0, min(a, f) - 1), "end_frame": max(z, f)}
+        start = f
+    for sh in shots:
+        sh.beats = [b for b in beats if sh.start_frame < b < sh.end_frame]
+        if sh.index > 1 and sh.start_frame in by_frame:
+            sh.flash_s = by_frame[sh.start_frame].flash_s
+    return shots

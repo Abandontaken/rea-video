@@ -31,13 +31,17 @@ VLM（能看图的多模态模型）建议配，不强制，配置方法也在 `
 ```bash
 # ⓪ 先看记住了什么：用户偏好（默认引擎、是否开 VLM、给你的偏好说明）和常见纠正类型
 rea-video memory
-# ① 拆解（产出 out/<名>/VIDEO.md + video/（给你读的拆片包）、report.html / report.md（给用户看）、breakdown.json、storyboard.jpg、audio.png、shots/、stems/）
+# ① 先看后拆（能看图、没开 VLM 时）：总览图定切点和转场，看不清的地方加密抽帧再看，再逐镜挑关键帧。
+#    按输出的 images 看图，把答案写进 waiting 里的文件，再跑同一条命令，直到 status 是 done；同一轮的任务互不相关，可以分给几个子 agent 并发。
+#    答案按 JEV 格式只写选项和概率，是 same 的 gap 不写；简单镜头的关键帧回 {"accept": true}。开了 VLM 时 decompose 会自动做这一步
+rea-video survey ref.mp4 -o out/ref
+# ② 拆解（产出 out/<名>/VIDEO.md + video/（给你读的拆片包）、report.html / report.md（给用户看）、breakdown.json、storyboard.jpg、audio.png、shots/、stems/）
 rea-video --env-file <你的 .env> decompose ref.mp4 -o out/ref --vlm --lang <zh|en>   # --lang 按用户提问的语言选（见「交付给用户」）；没有 VLM 配置就去掉 --env-file 和 --vlm；字幕/花字是日文就加 --ocr-lang ja，是韩文就加 --ocr-lang ko；台词是孟加拉语就加 --asr-lang bn
-# ② 看紧凑摘要：低置信镜头会被标出；先看 VLM: 那一行确认 VLM 是否生效
+# ③ 看紧凑摘要：低置信镜头会被标出；先看 VLM: 那一行确认 VLM 是否生效
 rea-video summary out/ref/breakdown.json
 ```
 
-**省 token，按拆片包逐层读**（格式见仓库 `docs/videomd.md`；地图一行一个文件：`路径 | 约 token | 内容`）：先读 `out/ref/VIDEO.md`（卡片 + 概览 + 地图，约 2k token），多数问题到这里就能答；要按镜头回答时读 `video/timeline.md`（一行一镜，键名带 `~` 的是推断，不带的是画面里看得到的）；要核实某一镜再打开 `video/shots/<编号>.md` 和它 `frames` 里的截图；某一方面（声音、包装、复刻方案）按地图打开对应的 `video/*.md`。不要读 `breakdown.json`（几十万字）或 `report.md`（那是给人看的）。复核时每镜看 `shots/shot_XXX.jpg` 联系表就够（已含首 / 中 / 尾帧），`_first` / `_last` 是复刻时给生成模型参照用的，不用另开。
+**省 token，按拆片包逐层读**（格式见仓库 `docs/videomd.md`；地图一行一个文件：`路径 | 约 token | 内容`）：先读 `out/ref/VIDEO.md`（卡片 + 概览 + 地图，约 2k token），多数问题到这里就能答；要按镜头回答时读 `video/timeline.md`（一行一镜，键名带 `~` 的是推断，不带的是画面里看得到的）；要核实某一镜再打开 `video/shots/<编号>.md` 和它 `frames` 里的截图；某一方面（声音、包装、复刻方案）按地图打开对应的 `video/*.md`。不要读 `breakdown.json`（几十万字）或 `report.md`（那是给人看的）。节奏、转场和每镜关键帧在 `video/rhythm.md`。复核时每镜看 `shots/shot_XXX.jpg` 联系表就够（是这一镜的关键帧），`_first` / `_last` 是复刻时给生成模型参照用的，不用另开。
 
 ### 看图复核并入（能看图的 agent 必做，开了 VLM 也建议做低置信镜头）
 
