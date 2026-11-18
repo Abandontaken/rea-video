@@ -30,13 +30,14 @@ from .shots import FrameTrack, Shot
 from .util import fmt_time, read_json, write_json
 from .visual import _font, _to_pil
 
-VERSION = 1
+VERSION = 2
 TILE_W = 240
 COLS = 8
-MAX_TILES = 48             # tiles on one overview sheet
-MAX_SHEETS = 4             # overview sheets; past MAX_TILES * MAX_SHEETS tiles the spacing grows
-OVERVIEW_EVERY = 1.0       # seconds between overview tiles when the video is short enough
-ZOOM_MAX = 16              # tiles on one zoom sheet
+MAX_TILES = 64             # tiles on one overview image (8 x 8)
+OVERVIEW_TILES = 192       # overview tiles at most; a longer video gets wider spacing
+OVERVIEW_MIN, OVERVIEW_MAX = 0.33, 3.0  # overview spacing (s), set by how often the video changes (overview_every)
+ZOOM_MAX = 16              # tiles for one stretch looked at closer (two rows)
+ZOOM_PER_SHEET = 3         # stretches stacked on one zoom image
 ZOOM_SPAN = 4.0            # longest stretch one zoom sheet covers
 MAX_ROUNDS = 3
 RHYTHM_STEP = 0.25         # seconds per value of the change curve
@@ -68,14 +69,18 @@ KEY_ROLES = {
     "light": "颜色、光线、底色突变（闪白、换底色、亮起）",
     "beat": "卡在节拍 / 音效上的画面变化",
 }
-DETAIL_INSTRUCTIONS = """你是动画原画师，在挑关键帧。图里是一个镜头的候选帧，每格左上角是编号和时间。
+DETAIL_INSTRUCTIONS = """你是动画原画师，在挑关键帧。图里每一条是一个镜头（标题栏写着 shot 编号和时间）的候选帧，每格左上角是编号和时间。
 关键帧 = 用最少的帧把这段画面定下来，其余帧都能从它们插值出来：状态的起点、终点和转折点，不是"变了多少就取一张"。
 
-按 JEV 格式回答，只回 JSON，不写解释：
-- frames：是关键帧的格子写 {"格子编号": {"answer": 角色, "p": {角色: 概率}}}，角色从 roles 里选；不是关键帧的不写。
-- missing：哪两格之间还漏了关键帧（例如动作在两格之间转折了、有元素一闪而过），写成 ["03-04", ...]；没有就写 []。
-- 第一格一般是 first；动作的转折和极值最重要，宁多勿漏。
-- 这个镜头很简单、候选帧已经够用时，只回 {"accept": true}。"""
+按 JEV 格式回答，只回 JSON，不写解释：{"shots": {"shot_001": {...}, ...}}
+- 候选帧已经够用的镜头不用写（等于接受）。
+- 要改的镜头写 frames 和 missing：frames 只写是关键帧的格子，"格子编号": "角色 概率"，例如 {"02": "extreme .8", "05": "enter"}，
+  角色从 roles 里选；missing 写漏了关键帧的相邻两格，例如 ["03-04"]（动作在两格之间转折了、有元素一闪而过）。
+- 第一格一般是 first；动作的转折和极值最重要，宁多勿漏。"""
+ZOOM_INSTRUCTIONS = """这一轮是放大细看：图里每一段（标题栏写着段编号和时间范围）是上一轮要细看的地方，按变化最大的帧密集抽取。
+gap 编号写成 段编号.NN，例如 r2_01.03 是这一段第 03 格和第 04 格之间。
+
+"""
 SOURCE_CRITERIA = {
     "live_action": "真实摄像机 / 手机实拍", "ai_video": "AI 生成视频（形变、纹理闪烁、物理不合理）", "avatar": "数字人口播",
     "cg_3d": "3D 渲染（Blender / C4D / UE，几何干净、光影一致）",
@@ -91,8 +96,8 @@ INSTRUCTIONS = """你是视频节奏审阅员。图里是按时间等距排开�
 编号 gNN 表示第 NN 格和下一格之间。格子底部的橙色条是这段里画面变化有多大（越长越大），右边红色竖线 + CUT 表示切镜检测器在这段里找到了切点。
 
 按 JEV 格式回答：只回 JSON，不写解释。
-- gaps：每个 gap 从 criteria 里选一项，写成 {"answer": 选项, "p": {选项: 概率, ...}}；是 "same" 的 gap 不用写，但画了红线的 gap 必须写。
-- 选 cut / transition 的，再加 "kind"（从 kinds 里选）。一个转场跨几个 gap 时，这几个 gap 的 kind 写成一样；
+- gaps：每个 gap 从 criteria 里选一项，简写成 "选项 [kind] 概率"，例如 {"g06": "transition zoom .85", "g09": "cut", "g12": "busy .7"}；
+  是 "same" 的 gap 不用写，但画了红线的 gap 必须写。选 cut / transition 的，kind 从 kinds 里选。一个转场跨几个 gap 时，这几个 gap 的 kind 写成一样；
   紧接着又是另一个转场（A 变成 B，B 马上又变成 C），换一个 kind，或者在 B 停留的那格写 busy。
 - source：按底层画面的制作方式分段（格子编号范围 + 选项 + 概率）。
 - 拿不准就选 unsure，会在那里加密抽帧再看一轮；不要猜。
@@ -225,33 +230,54 @@ def _grab(video: str, info: VideoInfo, times: list[float], width: int = TILE_W) 
     return [f if f is not None else fill for f in got]
 
 
-def _sheet(frames: list[np.ndarray], labels: list[str], bars: list[float], cuts: list[bool], out: Path, cols: int = COLS) -> Path:
-    """Tiles in rows; under each tile a bar for the change in the gap after it; a red edge + ✂ for detector cuts."""
-    font = _font(15)
+def _grid(frames: list[np.ndarray], labels: list[str], bars: list[float], cuts: list[bool], cols: int = COLS,
+          tile_w: int = TILE_W) -> Image.Image:
+    """Tiles in rows; under each tile a bar for the change in the gap after it; a red edge + CUT for detector cuts."""
+    font = _font(15 if tile_w >= 200 else 13)
     cells = []
     for f, lab, bar, cut in zip(frames, labels, bars, cuts):
         im = _to_pil(f)
-        im = im.resize((TILE_W, max(1, int(im.height * TILE_W / im.width))))
-        cell = Image.new("RGB", (TILE_W, im.height + 10), (24, 24, 24))
+        im = im.resize((tile_w, max(1, int(im.height * tile_w / im.width))))
+        cell = Image.new("RGB", (tile_w, im.height + 10), (24, 24, 24))
         cell.paste(im, (0, 0))
         d = ImageDraw.Draw(cell)
         w = int(d.textlength(lab, font=font)) + 8
-        d.rectangle([0, 0, w, 19], fill=(0, 0, 0))
+        d.rectangle([0, 0, w, 18], fill=(0, 0, 0))
         d.text((4, 1), lab, fill=(255, 255, 255), font=font)
-        d.rectangle([0, im.height + 2, int((TILE_W - 2) * min(1.0, bar)), im.height + 8], fill=(245, 158, 11))
+        d.rectangle([0, im.height + 2, int((tile_w - 2) * min(1.0, bar)), im.height + 8], fill=(245, 158, 11))
         if cut:
-            d.rectangle([TILE_W - 5, 0, TILE_W - 1, im.height + 9], fill=(230, 30, 30))
-            d.rectangle([TILE_W - 40, im.height - 22, TILE_W - 6, im.height - 2], fill=(230, 30, 30))
-            d.text((TILE_W - 37, im.height - 21), "CUT", fill=(255, 255, 255), font=_font(13))
+            d.rectangle([tile_w - 5, 0, tile_w - 1, im.height + 9], fill=(230, 30, 30))
+            d.rectangle([tile_w - 40, im.height - 22, tile_w - 6, im.height - 2], fill=(230, 30, 30))
+            d.text((tile_w - 37, im.height - 21), "CUT", fill=(255, 255, 255), font=_font(13))
         cells.append(cell)
     ch = max(c.height for c in cells)
-    rows = int(math.ceil(len(cells) / cols))
-    sheet = Image.new("RGB", (TILE_W * min(cols, len(cells)) + 2 * (min(cols, len(cells)) - 1), rows * (ch + 2)), (255, 255, 255))
+    n = min(cols, len(cells))
+    sheet = Image.new("RGB", (tile_w * n + 2 * (n - 1), int(math.ceil(len(cells) / cols)) * (ch + 2)), (255, 255, 255))
     for k, c in enumerate(cells):
-        sheet.paste(c, ((k % cols) * (TILE_W + 2), (k // cols) * (ch + 2)))
+        sheet.paste(c, ((k % cols) * (tile_w + 2), (k // cols) * (ch + 2)))
+    return sheet
+
+
+def _save(img: Image.Image, out: Path) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(out, quality=85)
+    img.save(out, quality=85)
     return out
+
+
+def _stack(blocks: list[tuple[str, Image.Image]], out: Path) -> Path:
+    """Several grids on one image, each under a title bar: one look instead of one per stretch."""
+    font = _font(17)
+    w = max(im.width for _, im in blocks)
+    h = sum(im.height + 26 for _, im in blocks)
+    sheet = Image.new("RGB", (w, h), (255, 255, 255))
+    d = ImageDraw.Draw(sheet)
+    y = 0
+    for title, im in blocks:
+        d.rectangle([0, y, w, y + 24], fill=(40, 70, 160))
+        d.text((8, y + 3), title, fill=(255, 255, 255), font=font)
+        sheet.paste(im, (0, y + 26))
+        y += im.height + 26
+    return _save(sheet, out)
 
 
 def _gap_bars(track: FrameTrack, times: list[float], score: np.ndarray, cut_frames: list[int]) -> tuple[list[float], list[bool]]:
@@ -270,21 +296,29 @@ def _source(video: str, info: VideoInfo) -> dict:
     return {"path": str(video), "duration": round(info.duration, 3), "size": [info.width, info.height], "fps": round(info.fps, 3)}
 
 
+def overview_every(track: FrameTrack, shots: list[Shot], dur: float) -> float:
+    """Spacing of the overview tiles, from how often this video changes: about two tiles between two sudden changes
+    (the detector's cuts or the change curve's spikes, whichever finds more), within OVERVIEW_MIN-OVERVIEW_MAX s and
+    at most OVERVIEW_TILES tiles. A fast edit gets a dense overview, a slow talk a sparse one."""
+    events = max(len(shots) - 1, spikes(track, 0.0, dur))
+    every = min(OVERVIEW_MAX, max(OVERVIEW_MIN, dur / (events + 1) / 2))
+    return max(every, dur / OVERVIEW_TILES)
+
+
 def overview_task(video: str, info: VideoInfo, track: FrameTrack, shots: list[Shot], sdir: Path) -> dict:
     dur = info.duration or _t(track, track.n - 1)
-    n = int(min(MAX_TILES * MAX_SHEETS, max(8, round(dur / OVERVIEW_EVERY))))
+    n = max(8, int(round(dur / overview_every(track, shots, dur))))
     every = dur / n
     times = [round((k + 0.5) * every, 3) for k in range(n)]
     score = change_score(track)
-    cut_frames = [s.start_frame for s in shots[1:]]
     frames = _grab(video, info, times)
-    bars, cuts = _gap_bars(track, times, score, cut_frames)
+    bars, cuts = _gap_bars(track, times, score, [s.start_frame for s in shots[1:]])
+    labels = [f"{k:02d} {fmt_time(t)}" for k, t in enumerate(times)]
     images = []
     for p in range(int(math.ceil(n / MAX_TILES))):
         sl = slice(p * MAX_TILES, (p + 1) * MAX_TILES)
-        labels = [f"{k:02d} {fmt_time(t)}" for k, t in enumerate(times)][sl]
         name = f"overview_{p + 1}.jpg" if n > MAX_TILES else "overview.jpg"
-        _sheet(frames[sl], labels, bars[sl], cuts[sl], sdir / name)
+        _save(_grid(frames[sl], labels[sl], bars[sl], cuts[sl]), sdir / name)
         images.append(f"survey/{name}")
     gaps = {f"g{k:02d}": [times[k], times[k + 1]] for k in range(n - 1)}
     return {
@@ -328,92 +362,143 @@ def _zoom_frames(track: FrameTrack, a: int, z: int, score: np.ndarray, cap: int 
     return keep
 
 
-def zoom_task(video: str, info: VideoInfo, track: FrameTrack, shots: list[Shot], sdir: Path, tid: str, t0: float, t1: float,
-              rnd: int, why: str) -> dict:
+def zoom_tasks(video: str, info: VideoInfo, track: FrameTrack, shots: list[Shot], sdir: Path, windows: list[tuple[float, float, str]],
+               rnd: int) -> list[dict]:
+    """The stretches to look at closer, ZOOM_PER_SHEET of them stacked on one image (one look, one answer file);
+    each stretch's gaps are named <stretch>.<NN>."""
     score = change_score(track)
-    a, z = frame_at(track, t0), frame_at(track, t1)
-    idx = _zoom_frames(track, a, z, score)
-    times = [round(_t(track, i), 3) for i in idx]
-    frames = _grab(video, info, times)
-    bars, cuts = _gap_bars(track, times, score, [s.start_frame for s in shots[1:]])
-    labels = [f"{k:02d} {fmt_time(t)}" for k, t in enumerate(times)]
-    name = f"zoom/{tid}.jpg"
-    _sheet(frames, labels, bars, cuts, sdir / name, cols=min(COLS, 4 if len(frames) <= 16 else COLS))
-    gaps = {f"{tid}.{k:02d}": [times[k], times[k + 1]] for k in range(len(times) - 1)}
-    return {
-        "id": tid, "round": rnd, "why": why, "images": [f"survey/{name}"], "instructions": INSTRUCTIONS,
-        "state": {"span": [round(t0, 3), round(t1, 3)], "tiles": len(times), "times": times,
-                  "tool_cut_gaps": [g for g, c in zip(gaps, cuts) if c]},
-        "questions": {"gaps": {"type": "choice", "per": "gap", "ids": list(gaps), "criteria": GAP_CRITERIA, "kinds": KINDS}},
-        "answer_template": {"gaps": {}},
-        "_gaps": gaps,
-    }
+    cut_frames = [s.start_frame for s in shots[1:]]
+    tasks = []
+    for p in range(int(math.ceil(len(windows) / ZOOM_PER_SHEET))):
+        blocks, gaps, wins = [], {}, []
+        for k, (t0, t1, why) in enumerate(windows[p * ZOOM_PER_SHEET:(p + 1) * ZOOM_PER_SHEET]):
+            wid = f"r{rnd}_{p * ZOOM_PER_SHEET + k + 1:02d}"
+            idx = _zoom_frames(track, frame_at(track, t0), frame_at(track, t1), score)
+            times = [round(_t(track, i), 3) for i in idx]
+            bars, cuts = _gap_bars(track, times, score, cut_frames)
+            grid = _grid(_grab(video, info, times), [f"{j:02d} {fmt_time(t)}" for j, t in enumerate(times)], bars, cuts, cols=COLS)
+            blocks.append((f"{wid}  {fmt_time(t0)} – {fmt_time(t1)}", grid))
+            wg = {f"{wid}.{j:02d}": [times[j], times[j + 1]] for j in range(len(times) - 1)}
+            gaps.update(wg)
+            wins.append({"id": wid, "why": why, "span": [round(t0, 3), round(t1, 3)], "times": times,
+                         "tool_cut_gaps": [g for g, c in zip(wg, cuts) if c]})
+        tid = f"r{rnd}_s{p + 1:02d}"
+        _stack(blocks, sdir / "zoom" / f"{tid}.jpg")
+        tasks.append({
+            "id": tid, "round": rnd, "images": [f"survey/zoom/{tid}.jpg"], "instructions": ZOOM_INSTRUCTIONS + INSTRUCTIONS,
+            "state": {"windows": wins},
+            "questions": {"gaps": {"type": "choice", "per": "gap", "ids": list(gaps), "criteria": GAP_CRITERIA, "kinds": KINDS}},
+            "answer_template": {"gaps": {}}, "_gaps": gaps,
+        })
+    return tasks
 
 
-DETAIL_CANDIDATES = 12     # candidate frames on one shot's detail sheet
+DETAIL_CANDIDATES = 12     # candidate frames of one shot (one row)
+DETAIL_PER_SHEET = 4       # shots stacked on one key-frame image
+DETAIL_TILE_W = 160
 DETAIL_MIN_S = 1.5         # shorter shots keep the tool's key frames without asking
 DETAIL_MIN_KEYS = 4        # ... and so do shots where the tool finds fewer key frames (little happens)
 
 
-def detail_task(video: str, info: VideoInfo, track: FrameTrack, sdir: Path, k: int, a: int, z: int,
-                busy: list[list[float]]) -> dict | None:
-    """One shot's candidate key frames, more than the tool would keep (a lower threshold), for the AI to choose
-    and name."""
+def _candidates(track: FrameTrack, a: int, z: int, busy: list[list[float]]) -> list[int] | None:
+    """A shot's candidate key frames for the AI (more than the tool would keep), or None when the shot is short or
+    little happens in it: the tool's key frames stand, no question asked."""
     if _t(track, z - 1) - _t(track, a) < DETAIL_MIN_S:
         return None
-    if len(key_frames(track, a, z, [tuple(b) for b in busy])) < DETAIL_MIN_KEYS:
-        return None  # little happens: the tool's key frames stand, no question asked
-    idx = key_frames(track, a, z, [tuple(b) for b in busy], max_n=DETAIL_CANDIDATES,
-                     moving=KEY_MOVING * 0.8, moving_busy=KEY_MOVING_BUSY * 0.8)
+    b = [tuple(x) for x in busy]
+    if len(key_frames(track, a, z, b)) < DETAIL_MIN_KEYS:
+        return None
+    idx = key_frames(track, a, z, b, max_n=DETAIL_CANDIDATES, moving=KEY_MOVING * 0.8, moving_busy=KEY_MOVING_BUSY * 0.8)
     if len(idx) < DETAIL_CANDIDATES // 2:  # few changes: top up evenly so a quick blink between two picks is still seen
         idx = sorted(set(idx) | set(np.linspace(a, z - 1, num=DETAIL_CANDIDATES // 2).round().astype(int).tolist()))
-    times = [round(_t(track, i), 3) for i in idx]
-    frames = _grab(video, info, times)
-    score = change_score(track)
-    bars, _ = _gap_bars(track, times, score, [])
-    tid = f"shot_{k:03d}"
-    name = f"detail/{tid}.jpg"
-    _sheet(frames, [f"{j:02d} {fmt_time(t)}" for j, t in enumerate(times)], bars, [False] * len(times), sdir / name,
-           cols=min(COLS, 6))
-    return {"id": tid, "stage": "detail", "images": [f"survey/{name}"], "instructions": DETAIL_INSTRUCTIONS,
-            "state": {"shot": k, "span": [times[0], round(_t(track, z - 1), 3)], "tiles": len(times), "times": times},
-            "questions": {"frames": {"type": "choice", "per": "tile", "criteria": KEY_ROLES},
-                          "missing": {"type": "multi_choice", "instructions": "漏了关键帧的相邻两格，写成 \"03-04\""}},
-            "answer_template": {"frames": {}, "missing": []},
-            "_frames": idx}
+    return idx
+
+
+def detail_tasks(video: str, info: VideoInfo, track: FrameTrack, sdir: Path, spans: list[tuple[int, int]],
+                 busy: list[list[float]]) -> list[dict]:
+    """Candidate key frames of the shots worth asking about, DETAIL_PER_SHEET shots stacked on one image, one row each."""
+    picked = [(k, idx) for k, (a, z) in enumerate(spans, start=1) if (idx := _candidates(track, a, z, busy))]
+    tasks = []
+    for p in range(int(math.ceil(len(picked) / DETAIL_PER_SHEET))):
+        blocks, shots_ = [], {}
+        for k, idx in picked[p * DETAIL_PER_SHEET:(p + 1) * DETAIL_PER_SHEET]:
+            times = [round(_t(track, i), 3) for i in idx]
+            sid = f"shot_{k:03d}"
+            grid = _grid(_grab(video, info, times, width=DETAIL_TILE_W), [f"{j:02d} {fmt_time(t)}" for j, t in enumerate(times)],
+                         [0.0] * len(times), [False] * len(times), cols=DETAIL_CANDIDATES, tile_w=DETAIL_TILE_W)
+            blocks.append((f"{sid}  {fmt_time(times[0])} – {fmt_time(_t(track, spans[k - 1][1] - 1))}", grid))
+            shots_[sid] = {"times": times, "frames": idx}
+        tid = f"kf_{p + 1:02d}"
+        _stack(blocks, sdir / "detail" / f"{tid}.jpg")
+        tasks.append({"id": tid, "stage": "detail", "images": [f"survey/detail/{tid}.jpg"], "instructions": DETAIL_INSTRUCTIONS,
+                      "state": {"shots": {sid: v["times"] for sid, v in shots_.items()}},
+                      "questions": {"shots": {"type": "per_shot", "frames": {"type": "choice", "per": "tile", "criteria": KEY_ROLES},
+                                              "missing": {"type": "multi_choice", "instructions": "漏了关键帧的相邻两格，写成 \"03-04\""}}},
+                      "answer_template": {"shots": {}}, "_frames": {sid: v["frames"] for sid, v in shots_.items()}})
+    return tasks
+
+
+def _clean_shot(v) -> dict:
+    """One shot's key-frame answer: "accept" (or nothing) = the tool's key frames; else frames {tile: role} and
+    missing ["03-04"]. Roles may be written short: "extreme .7"."""
+    if v is None or v == "accept" or (isinstance(v, dict) and v.get("accept")):
+        return {"accept": True, "frames": {}, "missing": []}
+    if not isinstance(v, dict):
+        return {"accept": True, "frames": {}, "missing": []}
+    frames = {}
+    for k, x in (v.get("frames") or {}).items():
+        if isinstance(x, str):
+            ans, _, p = _short(x, KEY_ROLES)
+            x = {"answer": ans, "p": {ans: p}} if ans else None
+        if isinstance(x, dict) and x.get("answer") in KEY_ROLES and str(k).isdigit():
+            p = {r: float(y) for r, y in (x.get("p") or {}).items() if r in KEY_ROLES and isinstance(y, (int, float))}
+            frames[int(k)] = {"answer": x["answer"], "p": p or {x["answer"]: 1.0}}
+    missing = []
+    for m in v.get("missing") or []:
+        try:
+            i, j = (int(y) for y in str(m).split("-"))
+            missing.append((min(i, j), max(i, j)))
+        except ValueError:
+            continue
+    return {"accept": not frames and not missing, "frames": frames, "missing": missing}
 
 
 def read_detail(path: Path) -> dict | None:
+    """{shot id: key-frame answer} from a filled detail answer; shots left out keep the tool's key frames."""
     if not path.is_file():
         return None
     try:
         got = read_json(path)
     except (OSError, ValueError):
         return None
-    if not isinstance(got, dict) or not (got.get("filled") or got.get("frames") or got.get("accept") or got.get("missing")):
+    if not isinstance(got, dict) or not (got.get("filled") or got.get("shots")):
         return None
-    if got.get("accept"):  # the tool's key frames are fine for this shot
-        return {"accept": True, "frames": {}, "missing": []}
-    frames = {}
-    for k, v in (got.get("frames") or {}).items():
-        v = {"answer": v} if isinstance(v, str) else v
-        if isinstance(v, dict) and v.get("answer") in KEY_ROLES and str(k).isdigit():
-            p = {r: float(x) for r, x in (v.get("p") or {}).items() if r in KEY_ROLES and isinstance(x, (int, float))}
-            frames[int(k)] = {"answer": v["answer"], "p": p or {v["answer"]: 1.0}}
-    missing = []
-    for m in got.get("missing") or []:
+    return {sid: _clean_shot(v) for sid, v in (got.get("shots") or {}).items()}
+
+
+def _short(text: str, options: dict, kinds: dict | None = None) -> tuple[str | None, str | None, float]:
+    """A short answer "transition zoom .85" -> (answer, kind, p). Options may be shortened to a unique prefix."""
+    ans = kind = None
+    p = 1.0
+    for tok in str(text).replace(",", " ").split():
         try:
-            i, j = (int(x) for x in str(m).split("-"))
-            missing.append((min(i, j), max(i, j)))
-        except ValueError:
+            p = float(tok)
             continue
-    return {"frames": frames, "missing": missing}
+        except ValueError:
+            pass
+        if ans is None:
+            hits = [o for o in options if o == tok] or [o for o in options if o.startswith(tok)]
+            ans = hits[0] if len(hits) == 1 else None
+        elif kinds and tok in kinds:
+            kind = tok
+    return ans, kind, max(0.0, min(1.0, p))
 
 
 def _clean_gap(v) -> dict | None:
     """One gap answer -> {"answer", "p", "kind"?}; None when unusable."""
     if isinstance(v, str):
-        v = {"answer": v}
+        ans, kind, p = _short(v, GAP_CRITERIA, KINDS)
+        v = {"answer": ans, "p": {ans: p}, **({"kind": kind} if kind else {})} if ans else None
     if not isinstance(v, dict):
         return None
     ans = v.get("answer")
@@ -421,8 +506,8 @@ def _clean_gap(v) -> dict | None:
         return None
     p = v.get("p") if isinstance(v.get("p"), dict) else {}
     p = {k: float(x) for k, x in p.items() if k in GAP_CRITERIA and isinstance(x, (int, float))}
-    tot = sum(p.values())
-    p = {k: round(x / tot, 3) for k, x in p.items()} if tot > 0 else {ans: 1.0}
+    tot = sum(p.values())  # probabilities over 1 in total are scaled down; a lone "cut .85" keeps its .85
+    p = {k: round(x / max(tot, 1.0), 3) for k, x in p.items()} if tot > 0 else {ans: 1.0}
     out = {"answer": ans, "p": p}
     if v.get("kind") in KINDS:
         out["kind"] = v["kind"]
@@ -504,7 +589,7 @@ def _public(task: dict) -> dict:
 
 
 def _task_paths(sdir: Path, tid: str) -> tuple[Path, Path]:
-    base = sdir if tid == "overview" else sdir / ("detail" if tid.startswith("shot_") else "zoom")
+    base = sdir if tid == "overview" else sdir / ("detail" if tid.startswith("kf_") else "zoom")
     return base / f"{tid}.task.json", base / f"{tid}.answer.json"
 
 
@@ -521,7 +606,7 @@ def _load_task(sdir: Path, tid: str) -> dict | None:
         return None
     t = read_json(tp)
     t["_gaps"] = t.pop("gap_times", None) or {}
-    t["_frames"] = t.pop("frame_index", None) or []
+    t["_frames"] = t.pop("frame_index", None) or {}
     return t
 
 
@@ -598,10 +683,9 @@ def run(video: str | Path, out: Path, track: FrameTrack, shots: list[Shot], info
                 nxt += _windows(t, ans["gaps"], rnd, track)
         if rnd == len(meta["rounds"]) and nxt:
             new = []
-            for k, (t0, t1, why) in enumerate(nxt):
-                tid = f"r{rnd + 1}_{k + 1:02d}"
-                _write_task(sdir, zoom_task(video, info, track, shots, sdir, tid, t0, t1, rnd + 1, why))
-                new.append(tid)
+            for t in zoom_tasks(video, info, track, shots, sdir, nxt, rnd + 1):
+                _write_task(sdir, t)
+                new.append(t["id"])
             meta["rounds"].append(new)
             write_json(meta_p, meta)
             return run(video, out, track, shots, info, asker, workers, detail)
@@ -615,11 +699,9 @@ def run(video: str | Path, out: Path, track: FrameTrack, shots: list[Shot], info
             for p in [*(sdir / "detail").glob("*")]:
                 p.unlink()
             ids = []
-            for k, (a, z) in enumerate(spans, start=1):
-                t = detail_task(video, info, track, sdir, k, a, z, timeline["busy"])
-                if t:
-                    _write_task(sdir, t)
-                    ids.append(t["id"])
+            for t in detail_tasks(video, info, track, sdir, spans, timeline["busy"]):
+                _write_task(sdir, t)
+                ids.append(t["id"])
             meta.update(detail=ids, detail_for=[c["frame"] for c in timeline["cuts"]])
             write_json(meta_p, meta)
         tasks = [t for tid in meta.get("detail", []) if (t := _load_task(sdir, tid))]
@@ -627,23 +709,28 @@ def run(video: str | Path, out: Path, track: FrameTrack, shots: list[Shot], info
         if (w := waiting(tasks, read_detail, "keyframes", 1)):
             write_json(sdir / "timeline.json", timeline)  # the cuts are settled already
             return w
-    timeline["keyframes"] = keyframe_list(track, spans, timeline["busy"], sdir if detail else None)
+    timeline["keyframes"] = keyframe_list(track, spans, timeline["busy"], sdir if detail else None, meta.get("detail", []))
     write_json(sdir / "timeline.json", timeline)
     return {"status": "done", "rounds": len(meta["rounds"]), "timeline": str(sdir / "timeline.json"),
             "shots": timeline["shots"], "cuts": len(timeline["cuts"]),
             "keyframes": sum(len(v) for v in timeline["keyframes"].values())}
 
 
-def keyframe_list(track: FrameTrack, spans: list[tuple[int, int]], busy: list[list[float]], sdir: Path | None) -> dict:
-    """{shot number: [{t, frame, role, p?, by}]}: the AI's picks and names where a detail answer exists (plus the
-    frame farthest from the in-between in every gap it said misses one), the tool's key frames elsewhere."""
+def keyframe_list(track: FrameTrack, spans: list[tuple[int, int]], busy: list[list[float]], sdir: Path | None,
+                  detail_ids: list[str] | None = None) -> dict:
+    """{shot number: [{t, frame, role, p?, by}]}: the AI's picks and names where a detail answer changed them (plus
+    the frame farthest from the in-between in every gap it said misses one), the tool's key frames elsewhere."""
+    asked: dict[str, tuple[list[int], dict]] = {}  # shot id -> (candidate frames, answer)
+    for tid in detail_ids or []:
+        t = _load_task(sdir, tid) if sdir else None
+        got = read_detail(_task_paths(sdir, tid)[1]) if t else None
+        for sid, idx in ((t or {}).get("_frames") or {}).items():
+            asked[sid] = (idx, (got or {}).get(sid) or {"accept": True})
     out: dict[str, list[dict]] = {}
     for k, (a, z) in enumerate(spans, start=1):
         rows: list[dict] = []
-        t = _load_task(sdir, f"shot_{k:03d}") if sdir else None
-        ans = read_detail(_task_paths(sdir, f"shot_{k:03d}")[1]) if t else None
-        if t and ans and not ans.get("accept"):
-            idx = t["_frames"]
+        idx, ans = asked.get(f"shot_{k:03d}", ([], {"accept": True}))
+        if idx and not ans.get("accept"):
             for j, v in ans["frames"].items():
                 if 0 <= j < len(idx):
                     rows.append({"frame": idx[j], "role": v["answer"], "p": round(max(v["p"].values()), 3), "by": "ai"})
@@ -665,12 +752,18 @@ def keyframe_list(track: FrameTrack, spans: list[tuple[int, int]], busy: list[li
 
 
 def _finest(found: dict) -> dict:
-    """Keep, for every stretch, the answers of the round that looked closest: a gap whose span holds gaps answered
-    in a later round is replaced by them."""
+    """Keep, for every stretch, the answers of the round that looked closest: a gap that later rounds' gaps cover (90%
+    of it; their tiles need not line up with its ends) is replaced by them."""
     out = {}
     for g, v in found.items():
         t0, t1 = v["t"]
-        if any(w["round"] > v["round"] and t0 - 1e-3 <= w["t"][0] and w["t"][1] <= t1 + 1e-3 for w in found.values()):
+        later = sorted((max(t0, w["t"][0]), min(t1, w["t"][1])) for w in found.values() if w["round"] > v["round"])
+        covered, end = 0.0, t0
+        for a, z in later:
+            if z > end:
+                covered += z - max(a, end)
+                end = z
+        if t1 > t0 and covered >= 0.9 * (t1 - t0):
             continue
         out[g] = v
     return out
@@ -705,9 +798,11 @@ def build_timeline(track: FrameTrack, shots: list[Shot], found: dict, meta: dict
                 run_.append(items[k][1])
             t0, t1 = run_[0]["t"][0], run_[-1]["t"][1]
             a, z = frame_at(track, t0) + 1, frame_at(track, t1) + 1
-            seg = score[a:max(a + 1, z)]
-            # the boundary: the biggest single change inside the transition, else its middle
-            b = a + int(np.argmax(seg)) if len(seg) and seg.max() > 0.15 else (a + z) // 2
+            # the boundary: the biggest single change inside the transition (away from its first and last frames, which
+            # may be the cuts before and after it), else its middle
+            m = 2 if z - a > 6 else 0
+            seg = score[a + m:max(a + m + 1, z - m)]
+            b = a + m + int(np.argmax(seg)) if len(seg) and seg.max() > 0.15 else (a + z) // 2
             kinds = [r.get("kind") for r in run_ if r.get("kind")]
             cuts.append({"t": round(_t(track, b), 3), "frame": int(b), "kind": max(set(kinds), key=kinds.count) if kinds else "effect",
                          "span": [round(t0, 3), round(t1, 3)], "p": round(float(np.mean([r["p"].get("transition", 0.5) for r in run_])), 3),
@@ -717,14 +812,16 @@ def build_timeline(track: FrameTrack, shots: list[Shot], found: dict, meta: dict
     same = [v for v in fin.values() if v["answer"] == "same" and not v.get("implicit") and v["p"].get("same", 0) >= DROP_TOOL_CUT_P]
     dropped = []
     near = 0.25  # a detector cut this close to a transition the survey found is that transition
+    edge = 2.5 / track.fps  # ... unless it sits on the transition's first or last frames: a separate cut next to it
     for s in shots[1:]:
         t = s.start
-        if any(c["span"][0] - near <= t <= c["span"][1] + near for c in cuts):
-            for c in cuts:  # the survey found the same change: take the detector's exact frame when it lies inside
-                if c["span"][0] - 1e-3 <= t <= c["span"][1] + 1e-3:
-                    c.update(frame=s.start_frame, t=round(t, 3), by="survey+tool")
-                    if c["kind"] in ("cut", "effect") and s.transition_in not in ("cut", "start"):
-                        c["kind"] = s.transition_in
+        inside = [c for c in cuts if c["span"][1] - c["span"][0] > 2 * edge and c["span"][0] + edge < t < c["span"][1] - edge]
+        at_edge = [c for c in cuts if c not in inside and c["span"][0] - edge <= t <= c["span"][1] + edge and c["span"][1] > c["span"][0]]
+        if inside or (not at_edge and any(c["span"][0] - near <= t <= c["span"][1] + near for c in cuts)):
+            for c in inside:  # the survey found the same change: take the detector's exact frame
+                c.update(frame=s.start_frame, t=round(t, 3), by="survey+tool")
+                if c["kind"] in ("cut", "effect") and s.transition_in not in ("cut", "start"):
+                    c["kind"] = s.transition_in
             continue
         if any(v["t"][0] <= t <= v["t"][1] for v in same):
             dropped.append(round(t, 3))

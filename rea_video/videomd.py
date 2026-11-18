@@ -306,8 +306,10 @@ def _next_steps(b: dict) -> list[str]:
                "Remake: `rea-video remake <this dir>` does what can be done automatically and keeps the original elsewhere; `remake/status.md` "
                "says per shot what is left. Add incoming clips to `remake/mine.json` and run it again"))
     if "code_render" in labels:
-        L.append(T("代码渲染镜头由 `rea-video code-remake <本目录>` 重画（上一条会自动跑）：改 `code/spec.json` 再跑，不要从零写",
-                   "Code-rendered shots are redrawn by `rea-video code-remake <this dir>` (the step above runs it): edit `code/spec.json` and rerun, do not write one from scratch"))
+        L.append(T("代码渲染镜头建议交给 HTML 视频框架（如 HyperFrames）按 `video/rhythm.md` 的节奏和关键帧重做；"
+                   "`rea-video code-remake <本目录>` 只出粒子 / 数据可视化这类画面的快速草稿",
+                   "Code-rendered shots are best rebuilt in an HTML video framework (such as HyperFrames) from the rhythm and key frames in "
+                   "`video/rhythm.md`; `rea-video code-remake <this dir>` only makes a quick draft for particles / data-visualisation pictures"))
     if (b.get("production_plan") or {}).get("drive"):
         L.append(T("舞蹈 / 动作镜头不走首尾帧生成：`rea-video drive <本目录>` 出去掉字幕、按停顿切好的驱动视频，生成好的段用 `--join` 拼回；路线和提示词在 `video/remake.md` 的「动作驱动」",
                    "Dance / action shots are not generated from first / last frames: `rea-video drive <this dir>` writes caption-free drive clips cut at calm moments, "

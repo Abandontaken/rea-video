@@ -401,7 +401,7 @@ def cmd_remake(args) -> int:
     out = Path(args.out_dir)
     if not (out / "breakdown.json").is_file():
         raise SystemExit(f"rea-video: {out} 下没有 breakdown.json，先运行 decompose")
-    print(json.dumps(remake(out, code=not args.no_code, overlays=not args.no_overlays), ensure_ascii=False, indent=1))
+    print(json.dumps(remake(out, code=args.code, overlays=not args.no_overlays), ensure_ascii=False, indent=1))
     return 0
 
 
@@ -813,9 +813,9 @@ def main(argv: list[str] | None = None) -> int:
     cp.add_argument("-o", "--out", help="输出目录：compare.json 和 compare_worst.jpg")
     cp.set_defaults(func=cmd_compare)
 
-    rm = sub.add_parser("remake", help="一条命令出复刻：代码渲染镜头重画、静图按运动重建、已生成 / 你给的镜头剪进去，其余原片占位；输出成片、对比视频和逐镜进度（remake/status.md）")
+    rm = sub.add_parser("remake", help="一条命令出复刻：静图按运动重建（代码渲染镜头默认原片占位，加 --code 出快速草稿）、已生成 / 你给的镜头剪进去，其余原片占位；输出成片、对比视频和逐镜进度（remake/status.md）")
     rm.add_argument("out_dir", help="decompose 的输出目录")
-    rm.add_argument("--no-code", action="store_true", help="不重画代码渲染镜头")
+    rm.add_argument("--code", action="store_true", help="用 code-remake 给代码渲染镜头出快速草稿（粒子 / 数据可视化类画面接近原片；插画动画建议交给 HyperFrames 等 HTML 视频框架）")
     rm.add_argument("--no-overlays", action="store_true", help="换掉的镜头上不叠回字幕 / 花字")
     rm.set_defaults(func=cmd_remake)
 

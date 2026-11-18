@@ -597,6 +597,13 @@ def _vlm_gate(rec: dict, vprobs: dict | None, vctx: dict) -> dict | None:
               and bool(facts.get("big_face") or facts.get("lowlight") or facts.get("face_area", 0) >= RULES["big_face"]["area"]))
     if v in UNMEASURED:  # 2D animation / stop motion: the tools cannot score them, so they cannot back them either
         return vprobs
+    # the overview is the only reader and reads the whole video as one way of making it: where the tools hold no hard
+    # evidence (no repeated frames; not sure either, as an AIGC label would make them; a sharpness rhythm alone proves
+    # nothing), that consistency decides. A shot that looks generated or filmed among rendered ones is the case the
+    # overview is for (the tools read the textures of a hand-drawn vector animation as photo or AI)
+    survey_only = bool(rec.get("survey_look")) and not rec.get("vlm") and not rec.get("review")
+    if survey_only and vprobs.get(v, 0.0) >= 0.7 and facts.get("pulldown") in (None, "interpolated") and dp < 0.65:
+        return vprobs
     # the tools are undecided when no label reaches 0.4 and the reader's pick trails the runner-up by a hair:
     # a lip macro with no face found scores 3D 0.35 / AI 0.27 / live 0.22 (issue #8 #22-#27), which is no call
     undecided = dp < 0.4 and vprobs.get(v, 0.0) > 0 and rec["deterministic"]["probs"].get(v, 0.0) >= 0.15 \
