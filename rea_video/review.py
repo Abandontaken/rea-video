@@ -31,7 +31,7 @@ INSTRUCTIONS = f"""你是这次的 VLM：逐个镜头看图，判断「底层画
 把你的判断并入结论（会重写 breakdown.json、report.md、report.html）。
 
 怎么看：
-1. 先看 storyboard.jpg 建立整体印象；每个镜头看 images 里的 sheet（首/中/尾联系表，一张就够，不用另开首尾帧）。
+1. 先看 storyboard.jpg 建立整体印象；每个镜头看 images 里的 sheet（这个镜头的关键帧：动作起止、转折、元素出入，一张就够，不用另开首尾帧）。
    要细看时运行顶层的 zoom_cmd，把 {{start}} {{end}} {{id}} 换成该镜头的值。
 2. priority=high 的镜头（低置信、次选接近、转码后实拍/AI 待确认）一定要看；其余镜头也尽量都答。
 3. common_evidence 是整片共有的工具证据（帧率、转码），每镜 tool.evidence 里不再重复。只依据画面证据，独立判断（这里不给 VLM 的答案，它会在融合时单独计入）。tool 一栏是确定性取证的结果，可能有误，但帧率类证据（24→30 重复帧）和 AIGC 标识可靠，
@@ -63,7 +63,7 @@ video_prompt（复刻该镜头的<PROMPT_LANG>视频提示词：先写景别、�
 最后在答案顶层的 aspects 里写整片：机位/场景、推测设备、整体布光、剪辑手法、视频形式。
 
 有人在表演的镜头填 performance（表演和情绪；报告「表演与情绪」一节和生成单元的提示词都用它，复刻时表情、动作、语气靠它还原）。
-看 sheet 的首 / 中 / 尾三帧，表情变化快的镜头用 zoom_cmd 抽帧细看；有 said 的镜头结合台词写 voice：
+看 sheet 里的关键帧（表情峰值、动作转折都在里面），表情变化快的镜头用 zoom_cmd 抽帧细看；有 said 的镜头结合台词写 voice：
 {PERF_GUIDE}
 
 每个镜头再填 narrative（这个镜头在讲什么）：role 选它在叙事上的作用，point 用一句话写它讲的那一点（去掉具体的人和产品也成立的写法，
@@ -159,7 +159,8 @@ def build_tasks(breakdown: dict, out_dir: str) -> tuple[dict, dict]:
             # the tool's top label is already in "tool"; drop it from the raw hints
             "hints": shot_hints(rec["features"], rec["deterministic"]["facts"], dl, dp).split("; 确定性初判=")[0],
             **({"aspects": {k: v["result"] for k, v in (rec.get("aspects") or {}).items() if v.get("result")}} if shoot_like else {}),
-            # the sheet already holds first / middle / last; separate first / last frames would triple the image tokens
+            # the sheet already holds the key frames; separate first / last frames would triple the image tokens
+            **({"keyframes": [[k["t"], k.get("role", "")] for k in rec["keyframes"]]} if rec.get("keyframes") else {}),
             **({"said": said[rec["index"]]} if said.get(rec["index"]) else {}),
             "images": {"sheet": rec["assets"]["sheet"], **({"strip": rec["assets"]["strip"]} if rec["assets"].get("strip") else {})},
             "_shoot_like": shoot_like,

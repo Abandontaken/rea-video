@@ -315,7 +315,9 @@ def _next_step(sh: dict, plan: dict | None = None) -> str:
     if lab == "film_footage":
         return T("影视片段：找到原片对应片段（有版权），或换成自己拍的", "film clip: find it in the source (rights apply) or shoot your own")
     if lab == "code_render":
-        return T("代码渲染：rea-video code-remake 没跑成，先单独跑它看报错", "code render: code-remake did not run; run it alone to see why")
+        return T("代码渲染：交给 HTML 视频框架（如 HyperFrames）按 video/rhythm.md 的节奏和关键帧重做，做好的片段写进 mine.json；要快速草稿加 --code",
+                 "code render: rebuild it in an HTML video framework (such as HyperFrames) from the rhythm and key frames in video/rhythm.md "
+                 "and add the clip to mine.json; --code makes a quick draft")
     return T("提供素材", "provide the footage") + tail
 
 
@@ -337,9 +339,10 @@ def _code_score(scores: list[dict], sh: dict) -> dict | None:
     return best
 
 
-def remake(out: Path, code: bool = True, overlays: bool = True) -> dict:
+def remake(out: Path, code: bool = False, overlays: bool = True) -> dict:
     """The whole remake in one pass, as far as it can go without paid generation or the user's own footage:
-    code-rendered shots are redrawn (code-remake), stills are rebuilt from the measured move, clips already
+    with `code`, code-rendered shots get a quick redraw (code-remake; otherwise they are left to an HTML video
+    framework and keep the original, unless a code-remake is already there), stills are rebuilt from the measured move, clips already
     generated (remake/results.json from remake-run) or supplied (remake/mine.json, {"results": {"<shot>": {"video": path}}})
     are cut in, everything else keeps the original as a stand-in. Writes remake/remake.mp4, remake/compare.mp4 and
     remake/status.md (per shot: how it is made now and what is still to do). Run it again whenever a clip comes in."""

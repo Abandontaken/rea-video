@@ -82,7 +82,8 @@ class Scene:
             img = cv2.imread(str(base / sc["cutout"]), cv2.IMREAD_UNCHANGED)
             img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
             a = img[..., 3:4].astype(np.float32) / 255.0
-            self.layer = img[..., :3].astype(np.float32) / 255.0 * a
+            self.layer = img[..., :3].astype(np.float32) / 255.0 * a  # premultiplied
+            self.alpha = np.repeat(a, 3, axis=2)
             return
         rows = np.array(json.loads((base / sc["points"]).read_text(encoding="utf-8"))["points"], np.float32).reshape(-1, 6)
         n = int(sc.get("count", len(rows)))
@@ -162,10 +163,17 @@ class Redraw:
         bg = s.bg if mix >= 1 else prev.bg * (1 - mix) + s.bg * mix
         drawn = np.zeros((self.H, self.W, 3), np.float32)
         if s.draw == "cutout":
-            drawn += cv2.warpAffine(s.layer, s.matrix(t), (self.W, self.H)) * s.gain * mix
+            # a cut-out picture lies over the ground (dark ink on paper must darken it, not add light); while it
+            # morphs in, the previous scene's picture fades out under it
+            out = bg.copy()
             if mix < 1 and prev.draw == "cutout":
-                drawn += cv2.warpAffine(prev.layer, prev.matrix(prev.end), (self.W, self.H)) * prev.gain * (1 - mix)
-            dot = 0.0
+                M = prev.matrix(prev.end)
+                pa = cv2.warpAffine(prev.alpha, M, (self.W, self.H)) * (1 - mix)
+                out = out * (1 - pa) + cv2.warpAffine(prev.layer, M, (self.W, self.H)) * prev.gain * (1 - mix)
+            M = s.matrix(t)
+            a = cv2.warpAffine(s.alpha, M, (self.W, self.H)) * mix
+            out = out * (1 - a) + cv2.warpAffine(s.layer, M, (self.W, self.H)) * s.gain * mix
+            return (np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8)
         else:
             xy, col = s.particles(t)
             dot = s.dot

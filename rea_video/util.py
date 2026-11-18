@@ -92,12 +92,35 @@ def write_image(path, img, params: list[int] | None = None) -> bool:
     return bool(ok)
 
 
+def _proxy_map() -> dict:
+    """Proxy map for urllib, with the Windows "only NO_PROXY is set" case fixed.
+
+    urllib's getproxies() is getproxies_environment() or getproxies_registry(). On Windows a user
+    behind a system proxy usually exports NO_PROXY alone, so getproxies_environment() comes back as
+    {'no': ...} — non-empty, hence truthy — and the registry is never consulted. Every download then
+    dials out directly and fails behind a firewall instead of using the proxy the OS already has.
+    """
+    import urllib.request
+
+    env = urllib.request.getproxies_environment()
+    if os.name != "nt" or set(env) != {"no"}:
+        return urllib.request.getproxies()
+    try:
+        registry = urllib.request.getproxies_registry()
+    except Exception:  # pragma: no cover - registry lookups are best effort
+        return env
+    merged = dict(registry)
+    merged.update(env)
+    return merged
+
+
 def fetch(url: str, dest: Path, timeout: float = 60.0) -> None:
     """Download url to dest. The timeout is per read, so a stalled connection raises instead of hanging the run."""
     import shutil
     import urllib.request
 
-    with urllib.request.urlopen(url, timeout=timeout) as resp, open(dest, "wb") as f:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(_proxy_map()))
+    with opener.open(url, timeout=timeout) as resp, open(dest, "wb") as f:
         shutil.copyfileobj(resp, f, 1 << 20)
 
 

@@ -67,6 +67,31 @@ _FINALIZE_ONLY = {"classify.py", "report.py", "plan.py", "production.py", "entit
 _DECODE_FP: str | None = None
 
 
+KEY_SHEET_MAX = 8  # key frames on one shot's contact sheet
+
+
+def key_sheet_frames(video: Path, info, kf: list[dict], smp) -> tuple[list, list[float]]:
+    """Frames for a shot's contact sheet: its key frames (at most KEY_SHEET_MAX, named roles first), else the evenly
+    spaced samples."""
+    from .survey import _grab
+
+    rows = kf
+    if len(rows) > KEY_SHEET_MAX:
+        generic = [r.get("by") == "tool" and r.get("role") in ("change", "last") for r in rows]
+        if all(generic[1:]):  # the tool's picks only: spread them evenly
+            keep = set(np.linspace(0, len(rows) - 1, num=KEY_SHEET_MAX).round().astype(int).tolist())
+        else:  # named key frames first, the most certain first
+            ranked = sorted(range(1, len(rows)), key=lambda i: (generic[i], -float(rows[i].get("p") or 0)))
+            keep = set(ranked[:KEY_SHEET_MAX - 1]) | {0}
+        rows = [r for i, r in enumerate(rows) if i in keep]
+    times = [float(r["t"]) for r in rows]
+    if len(times) >= 2:
+        frames = _grab(str(video), info, times, width=320)
+        if len(frames) == len(times):
+            return frames, times
+    return smp.frames, smp.frame_times
+
+
 def decode_fingerprint() -> str:
     """Hash of the code that measures a video (decode, shots, features, audio, packaging). `rea-video eval`
     reuses a stored breakdown only while this is unchanged, so a change to the measuring code cannot hide behind
@@ -87,7 +112,7 @@ def decode_fingerprint() -> str:
 def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, whole_vlm: bool = True,
               ocr: bool = True, workers: int = 3, engine: str | None = None, max_shots_vlm: int = 60,
               platform_meta: dict | None = None, stems: bool = True, memory: bool = True, packaging: bool = True, asr: bool = True,
-              lang: str = "zh", speakers: bool = True) -> dict:
+              lang: str = "zh", speakers: bool = True, survey: bool = True) -> dict:
     lang = set_lang(lang)
     require_tools()
     t0 = time.time()
@@ -101,6 +126,27 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
     track = build_track(str(video), info)
     shots = detect_shots(track)
     LOG.info("detected %d shots", len(shots))
+    # the survey (overview first, closer looks where needed): an agent's answers from `rea-video survey`, or the VLM's
+    from .survey import key_frames, load_timeline, run as run_survey, source_at, vlm_asker
+
+    timeline = load_timeline(out, video, info)
+    vlm_client = None  # one client for the survey and the shot pass: a model found down stays skipped
+    if timeline is None and use_vlm and survey:
+        cfg = VLMConfig.from_env()
+        if cfg is not None:
+            vlm_client = VLMClient(cfg, out / "vlm_cache")
+            try:
+                got = run_survey(video, out, track, shots, info, asker=vlm_asker(vlm_client, prompt_lang_note()), workers=workers)
+                LOG.info("survey: %s", {k: got.get(k) for k in ("status", "rounds", "shots", "keyframes")})
+                timeline = load_timeline(out, video, info)
+            except Exception as exc:  # noqa: BLE001  the cut detector's shots still stand
+                LOG.warning("survey with the VLM failed: %s", str(exc)[:160])
+    if timeline is not None:
+        from .shots import shots_from_cuts
+
+        shots = shots_from_cuts(track, shots, timeline["cuts"])
+        LOG.info("survey: %d shots after the overview and closer looks", len(shots))
+    keyframes = (timeline or {}).get("keyframes") or {}
     marks = [s.t(b) for s in shots for b in s.beats]
     audio = analyze_audio(str(video), [s.start for s in shots[1:]], marks) if info.has_audio else {"has_audio": False}
     stems_job = None
@@ -184,7 +230,11 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
         probs, evidence, facts = deterministic(feats, ov, text, faces, audio, prov, fps=info.fps)
         layers = overlay_layers(ov, text, template)
         sid = f"shot_{s.index:03d}"
-        shot_sheet(smp.frames, smp.frame_times, out / "shots" / f"{sid}.jpg")
+        # key frames: the survey's (the AI's picks and names) when it ran, else the tool's: start, stop, turn, extreme
+        kf = keyframes.get(str(s.index)) or [{"frame": f, "t": round(s.t(f), 3), "role": "first" if f == s.start_frame else "change", "by": "tool"}
+                                              for f in key_frames(track, s.start_frame, s.end_frame)]
+        sheet_frames, sheet_times = key_sheet_frames(video, info, kf, smp)
+        shot_sheet(sheet_frames, sheet_times, out / "shots" / f"{sid}.jpg", n=len(sheet_frames) if sheet_frames is not smp.frames else 4)
         still_w = min(1080, info.display_size[0] or 1080)  # never upscale; rotated video: displayed width
         # full-resolution first / last frames (remake keyframes): ffmpeg runs in the background while the next shot is measured
         stills.append(still_pool.submit(extract_frame, video, s.start + min(0.05, s.duration / 4), out / "shots" / f"{sid}_first.jpg", still_w))
@@ -206,8 +256,12 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
             sheet = element_crops(video, info, s.start, s.end, motion, out / "shots", sid, min(1080, info.display_size[0] or 1080))
             if sheet:
                 motion["elements_sheet"] = sheet
+        look = source_at(timeline, s.start, s.end) if timeline else None
         rec = {
-            "id": sid, **s.to_dict(), "features": round_floats(feats), "faces": round(faces, 3),
+            **({"survey_look": {"label_probs": {k: float(look["p"].get(k, 0.0)) for k in LABEL_ZH}, "answer": look["answer"],
+                                "_by": look.get("by") or "agent", "evidence": []}} if look else {}),
+            "id": sid, **s.to_dict(), "keyframes": [{k: r[k] for k in ("t", "role", "by", "p") if k in r} for r in kf],
+            "features": round_floats(feats), "faces": round(faces, 3),
             "aspects": round_floats(asp), "overlay": round_floats(ov), "text": text, "layers": layers, "embedded_assets": round_floats(embedded),
             "deterministic": {"probs": round_floats(probs), "evidence": evidence, "facts": facts},
             "assets": {"sheet": f"shots/{sid}.jpg", "first_frame": f"shots/{sid}_first.jpg", "last_frame": f"shots/{sid}_last.jpg"},
@@ -235,7 +289,7 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
             LOG.warning("--vlm requested but no VLM config found (REA_VLM_* / VIDEO_ANALYSIS_* / GEMINI3_*); continuing without it")
             vlm_info = {"used": False, "requested": True, "status": "not_configured", "error": "no_config"}
         else:
-            client = VLMClient(cfg, out / "vlm_cache")
+            client = vlm_client or VLMClient(cfg, out / "vlm_cache")
             vlm_info = {"used": False, "requested": True, "status": "failed", "model": cfg.describe(), "media": cfg.media, "errors": []}
 
             def run_unit(unit: list[dict]) -> None:
@@ -367,6 +421,8 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
         "stems": {k: (Path(v).name if k in ("original", "vocals", "music") else v) for k, v in stem_info.items()},
         "speech": heard,
         "speakers": who,
+        **({"rhythm": timeline["rhythm"], "survey": {"rounds": timeline.get("rounds"), "shots_estimate": timeline.get("shots_estimate"),
+                                                      "cuts": timeline["cuts"], "busy": timeline.get("busy", [])}} if timeline else {}),
         "per_clip_audio": per_clip_audio(str(video), [s.start for s in shots[1:]], info.duration) if info.has_audio else {},
     }
     if pack is not None:
@@ -472,8 +528,11 @@ def _user_real(material: dict, real: bool) -> None:
 
 
 def visual_opinion(rec: dict) -> dict | None:
-    """What a model saw in the shot: the VLM answer, an agent's review (rea-video apply-review), or both averaged."""
+    """What a model saw in the shot: the VLM answer, an agent's review (rea-video apply-review), or both averaged;
+    with neither, the survey's look at the whole video (how this stretch was made, from the overview)."""
     v, a = rec.get("vlm"), rec.get("review")
+    if not (v or a):
+        return rec.get("survey_look")
     if not (v and a):
         return v or a
     merged = dict(v)
@@ -538,6 +597,13 @@ def _vlm_gate(rec: dict, vprobs: dict | None, vctx: dict) -> dict | None:
               and bool(facts.get("big_face") or facts.get("lowlight") or facts.get("face_area", 0) >= RULES["big_face"]["area"]))
     if v in UNMEASURED:  # 2D animation / stop motion: the tools cannot score them, so they cannot back them either
         return vprobs
+    # the overview is the only reader and reads the whole video as one way of making it: where the tools hold no hard
+    # evidence (no repeated frames; not sure either, as an AIGC label would make them; a sharpness rhythm alone proves
+    # nothing), that consistency decides. A shot that looks generated or filmed among rendered ones is the case the
+    # overview is for (the tools read the textures of a hand-drawn vector animation as photo or AI)
+    survey_only = bool(rec.get("survey_look")) and not rec.get("vlm") and not rec.get("review")
+    if survey_only and vprobs.get(v, 0.0) >= 0.7 and facts.get("pulldown") in (None, "interpolated") and dp < 0.65:
+        return vprobs
     # the tools are undecided when no label reaches 0.4 and the reader's pick trails the runner-up by a hair:
     # a lip macro with no face found scores 3D 0.35 / AI 0.27 / live 0.22 (issue #8 #22-#27), which is no call
     undecided = dp < 0.4 and vprobs.get(v, 0.0) > 0 and rec["deterministic"]["probs"].get(v, 0.0) >= 0.15 \
@@ -552,7 +618,7 @@ def _vlm_gate(rec: dict, vprobs: dict | None, vctx: dict) -> dict | None:
     # The exception holds only when fusing actually lands on the agent's pick; a compromise label nobody voted for
     # is worse than the tools' call (eval holdout2 dual_role_realcat: agent "still image move" + tools "code render"
     # fused to "AI video").
-    agent_only = bool(rec.get("review")) and not rec.get("vlm") \
+    agent_only = bool(rec.get("review") or rec.get("survey_look")) and not rec.get("vlm") \
         and decide(fuse(rec["deterministic"]["probs"], vprobs, facts.get("temporal_family", "dynamic")))[0] == v
     if v not in (d, ranked[1][0]) and not person and not undecided and not same_group and not agent_only:  # it must back one of the tools' two best guesses
         return None
@@ -692,7 +758,12 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
                               by=by, at=join(fmt_time(c) for c in split["cuts"][:6]))
                             + (T("（{seq}）", " ({seq})", seq=seq) if seq else "") + (T("：", ": ") + split['note'] if split.get("note") else ""))
         evidence = measured + seen_ev
-        decided = "fused" if rec.get("vlm") else ("fused_agent" if rec.get("review") else "deterministic")
+        if not rec.get("vlm") and not rec.get("review") and rec.get("survey_look"):
+            sl = rec["survey_look"]
+            seen_ev.append(T("[{by} 总览] 全片总览判断这段是{l}", "[{by} overview] The whole-video overview reads this stretch as {l}",
+                             by=reviewer_name(sl.get("_by") or "agent"), l=LABEL_ZH.get(sl.get("answer"), sl.get("answer"))))
+            evidence = measured + seen_ev
+        decided = "fused" if rec.get("vlm") else ("fused_agent" if rec.get("review") or rec.get("survey_look") else "deterministic")
         user = rec.get("user") or {}
         if user.get("label") in LABEL_ZH:  # the user said what this shot is: that is the answer
             label, conf, decided = user["label"], 1.0, "user"
