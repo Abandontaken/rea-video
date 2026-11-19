@@ -14,18 +14,53 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.FORK_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+
       - name: Sync from upstream
         id: sync
         env:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          gh repo sync "${{ github.repository }}" --branch "${{ github.event.repository.default_branch }}"
+          sync_log=$(gh repo sync "${{ github.repository }}" --branch "${{ github.event.repository.default_branch }}" 2>&1)
           status=$?
           set -e
+          printf '%s\n' "$sync_log"
           if [ "$status" -eq 0 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! printf '%s\n' "$sync_log" | grep -F "can't sync because there are diverging changes"; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "sync_exit=$status" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          branch="${{ github.event.repository.default_branch }}"
+          parent=$(gh repo view "${{ github.repository }}" --json parent --jq '.parent.full_name // empty')
+          if ! printf '%s\n' "$parent" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "No usable upstream parent; cannot recover a diverged sync."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "sync_exit=$status" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags "https://github.com/${parent}.git" "+refs/heads/${branch}:refs/remotes/upstream/${branch}"
+          if ! git config user.email >/dev/null; then
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git config user.name "github-actions[bot]"
+          fi
+          set +e
+          bash scripts/sync_upstream_git.sh . "$branch" "refs/remotes/upstream/${branch}"
+          recover=$?
+          set -e
+          if [ "$recover" -eq 0 ]; then
+            git push origin "refs/heads/${branch}:${branch}"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
           else
+            echo "Diverged upstream sync was not recovered (status ${recover})."
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "sync_exit=$status" >> "$GITHUB_OUTPUT"
           fi
