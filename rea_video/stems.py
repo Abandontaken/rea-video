@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .util import fetch, sha256_file
+from .util import fetch, model_threads, sha256_file
 
 LOG = logging.getLogger(__name__)
 SR = 44100
@@ -26,6 +26,11 @@ CHUNK = HOP * (DIM_T - 1)
 TRIM = N_FFT // 2
 GEN = CHUNK - 2 * TRIM
 WINDOW = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(N_FFT) / N_FFT)).astype(np.float32)  # periodic hann
+
+
+# threads per separation model, set from this machine (util.model_threads): the models run alongside the picture
+# analysis, and more threads than its full-speed cores only fight over them
+MODEL_THREADS = model_threads()
 
 
 def models_dir() -> Path:

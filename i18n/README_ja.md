@@ -13,6 +13,8 @@
 
 [公式サイト](https://www.reavideo.ai) | [中文](README_zh.md) | [English](../README.md) | [Русский](README_ru.md) | 日本語 | [한국어](README_ko.md) | [Español](README_es.md) | [Português](README_pt.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | [Tiếng Việt](README_vi.md) | [বাংলা](README_bn.md) | [Türkçe](README_tr.md)
 
+**⚠️ Notice: rea-video is an open-source project. I have not launched and will not launch any cryptocurrency token. Any token using this project’s name is not affiliated with me, and I do not endorse it or accept fees from it. Please be cautious of scams.**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ rea-video は無料のオープンソースです。スポンサーの支援で�
 
 ## 仕組み
 
-![rea-video のパイプライン](../docs/rea-flow_ja.svg)
+![rea-video のパイプライン](../docs/flow/rea-flow_ja.svg)
 
 1. 分割：動画をショットに切り分け、音声を声・音楽・効果音に分けます。
 2. 手がかり集め：フレームを測り（フレーム間隔、センサーノイズ、画面全体が 1 枚の平面としてパンしているか、メタデータの AIGC タグ）、画像を見て（手、文字、物理的なおかしさ）、音を聴きます（BPM、キー、歌か話し声か）。

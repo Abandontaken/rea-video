@@ -12,7 +12,7 @@ description: 逆向拆解一条视频是怎么做出来的——逐镜头判断�
 3. **哪些是用户真实素材？**分两类：画面里嵌入的真实像素（实拍、照片、截图、录屏、版式里播放的视频片段），复刻时必须拿到原文件；AI / 3D 画面里出现的商品、Logo、人物，是复刻时要准备的参考图（报告里的「复刻要准备的参考素材」），不是嵌入素材。
 4. **声音怎么做的？**人声（TTS 还是真人）、BGM（风格 / BPM / 调性 / 段落）、音效（时间点、类型、对应哪个画面事件），以及切镜是否卡在节拍上。**重点是来源：AI 生成的还是现成的。**先看视频形式——AI 音乐 MV（整片是一首唱出来的歌）大概率是 AI 歌；普通视频配乐大概率是现成曲库，但 AI 工作流的视频 BGM 也常是 Suno 生成，必须标"待确认"并给确认方法。
 5. **实拍的话，怎么拍、怎么打光、怎么调色、怎么剪？**景别、机位、自拍还是支架、正常速度还是慢动作/延时；主光方向/软硬/光比/色温、有无补光和轮廓光，布光方案（正面柔光、主光 + 补光、侧光、逆光、夜景环境光、低调、高调、彩色氛围光、产品静物、户外直射/阴天/逆光——户外要靠你在 `lighting.location` 里写明"户外"）；调色风格（自然、青橙、日系、胶片、黑白、暗调）；跳切、推近切、插入素材的节奏。
-6. **怎么复刻？**每镜给出路线和工具；实拍镜头给拍摄方案（布光 + 器材清单），不是只写"用 AI 近似"，AI 类镜头可以交给 capsule-cinema 生成，整条复刻也可以用 ChatCut，见 `references/remake-tools.md`。
+6. **怎么复刻？**每镜给出路线和工具；实拍镜头给拍摄方案（布光 + 器材清单），不是只写"用 AI 近似"，AI 类镜头可以交给 capsule-cinema 生成，整条复刻也可以用 ChatCut（rea-video 的赞助商），见 `references/remake-tools.md`。
 
 核心原则：**每个结论都要有证据，确定不了就如实写"待确认"并说明还缺什么。**宁可写"实拍还是 AI 待确认（倾向 AI 70%）"，也不要编一个确定的答案。
 
@@ -31,9 +31,9 @@ VLM（能看图的多模态模型）建议配，不强制，配置方法也在 `
 ```bash
 # ⓪ 先看记住了什么：用户偏好（默认引擎、是否开 VLM、给你的偏好说明）和常见纠正类型
 rea-video memory
-# ① 先看后拆（能看图、没开 VLM 时）：总览图定切点和转场，看不清的地方加密抽帧再看，再逐镜挑关键帧。
-#    按输出的 images 看图，把答案写进 waiting 里的文件，再跑同一条命令，直到 status 是 done；同一轮的任务互不相关，可以分给几个子 agent 并发。
-#    答案按 JEV 格式只写选项和概率，是 same 的 gap 不写；简单镜头的关键帧回 {"accept": true}。开了 VLM 时 decompose 会自动做这一步
+# ① 先看后拆（能看图、没开 VLM 时）：小格总览图只定切点和转场，看不清的地方逐帧放大再看，最后逐镜挑关键帧、判断画面怎么做的。
+#    按输出的 images 看图，把答案写进 waiting 里的文件，再跑同一条命令，直到 status 是 done；同一轮的图自己一次看完、一起答（最省 token）；图多（4 张以上）再分给几个子 agent 并发。
+#    答案按 JEV 格式只写选项和概率，是 same 的 gap 不写；放大图先写 scenes（每块依次出现了哪几个东西）；关键帧图上整张写一次 look，不用改的镜头不写。开了 VLM 时 decompose 会自动做这一步
 rea-video survey ref.mp4 -o out/ref
 # ② 拆解（产出 out/<名>/VIDEO.md + video/（给你读的拆片包）、report.html / report.md（给用户看）、breakdown.json、storyboard.jpg、audio.png、shots/、stems/）
 rea-video --env-file <你的 .env> decompose ref.mp4 -o out/ref --vlm --lang <zh|en>   # --lang 按用户提问的语言选（见「交付给用户」）；没有 VLM 配置就去掉 --env-file 和 --vlm；字幕/花字是日文就加 --ocr-lang ja，是韩文就加 --ocr-lang ko；台词是孟加拉语就加 --asr-lang bn
@@ -91,7 +91,7 @@ rea-video summary out/ref/breakdown.json      # 用并入后的结果写回复
 
 按 `references/output-template.md` 回复：先一句话结论，再内容与角色（这条视频讲什么、主要角色和场景），叙事线（每一步在抓注意、补信息还是给结论，见 `video/content.md`；建议用户保留这条线、换成自己的案例和素材来重写，不只是换个主角），然后复刻方案（按生成单元 / 拍摄场次组织）、分镜表、剪辑包装、声音、真实素材清单、不确定点，最后给 `report.html` 路径（用户版报告：先讲三层、再给照着做的复刻步骤，用户自己就能复刻）；用户要 PDF 时运行 `rea-video pdf out/ref` 生成 `report.pdf`（需要本机有 Chrome / Chromium / Edge）。不要把 breakdown.json 贴进对话。
 
-用户想复刻、二创、做同款或照着做一条自己的，或想知道这条视频怎么做出来、怎么实现时，在回复末尾告知可以用哪些工具来做（`references/remake-tools.md` 里列的都写，各一句）；用户选了哪种，按那种的文档帮他接上（`references/chatcut.md`、`capsule-cinema.md`、`hyperframes.md`、`diy.md`）。
+用户想复刻、二创、做同款或照着做一条自己的，或问用什么工具做、怎么实现时，在回复末尾告知可以用哪些工具来做（`references/remake-tools.md` 里列的都写，各一句）；只问是不是 AI、用了什么素材这类识别问题时不列；用户选了哪种，按那种的文档帮他接上（`references/chatcut.md`、`capsule-cinema.md`、`hyperframes.md`、`diy.md`）。
 
 **报告和回复都用用户的语言。**语言的判断顺序：用户明确指定的语言（「用英文出报告」「report in Chinese」）> 用户提问所用的语言 > `rea-video memory` 里的 `lang` 偏好 > 中文。
 - 工具支持 `--lang zh` 和 `--lang en`：`decompose` 时就传对，报告文件（`report.html` / `report.md`）、`summary` 输出、VLM 的画面描述和提示词都会是该语言；忘了传可以在 `apply-review out/ref --lang en` 时补上（会重新生成结论和报告文字；VLM 已写好的描述和提示词保持原语言）。看图复核时，`review_answers.json` 里的 evidence / description / prompt 也用这个语言写。

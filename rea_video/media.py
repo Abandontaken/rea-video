@@ -176,6 +176,10 @@ def iter_frames(
     w, h = scaled_size(info, width)
     vf = []
     if fps:
+        if start is not None and start > 0:
+            # the first frame (half a frame past the seek point) at time zero, or the rate filter repeats it and every
+            # frame after it lands one late
+            vf.append("setpts=PTS-STARTPTS")
         vf.append(f"fps={fps:g}")
     if crop:
         cx, cy, cw, ch = crop
@@ -238,6 +242,45 @@ def extract_frame(path: str | Path, t: float, out_path: str | Path, width: int |
         cmd = ["ffmpeg", "-v", "error", "-y", "-sseof", "-3", "-i", str(path), "-update", "1", *vf, "-q:v", "2", str(out_path)]
         _run_ffmpeg(cmd, f"frame at {t:.2f}s")
     return out_path
+
+
+def extract_frames(path: str | Path, picks: list[tuple[int, str | Path]], width: int | None = None) -> list[Path]:
+    """Frames by index (decode order, as the frame track counts them) to JPEG files, all from one decode: the same
+    pictures extract_frame writes for those frames, without a seek and a decode from the key frame before each."""
+    if not picks:
+        return []
+    by_frame: dict[int, list[Path]] = {}
+    for n, out in picks:
+        by_frame.setdefault(max(0, int(n)), []).append(Path(out))
+    order = sorted(by_frame)
+    tmp = Path(tempfile.mkdtemp(prefix="rea_frames_"))
+    try:
+        sel = _any_frame(order)
+        vf = f"select='{sel}'" + (f",scale={width}:-2" if width else "")
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-vf", vf, *passthrough_args(), "-q:v", "2", str(tmp / "f_%06d.jpg")]
+        _run_ffmpeg(cmd, f"{len(order)} frames")
+        got = sorted(tmp.glob("f_*.jpg"))
+        written = []
+        for k, n in enumerate(order):
+            for out in by_frame[n]:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                src = got[min(k, len(got) - 1)] if got else None
+                if src is None:
+                    continue
+                shutil.copyfile(src, out)
+                written.append(out)
+        return written
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _any_frame(frames: list[int]) -> str:
+    """select expression true on any of the frames, summed as a balanced tree: ffmpeg rejects expressions nested
+    deeper than 100, and a flat a+b+c+... nests one level per term."""
+    if len(frames) == 1:
+        return f"eq(n\\,{frames[0]})"
+    mid = len(frames) // 2
+    return f"({_any_frame(frames[:mid])}+{_any_frame(frames[mid:])})"
 
 
 def _run_ffmpeg(cmd: list[str], what: str) -> None:

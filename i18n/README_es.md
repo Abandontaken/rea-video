@@ -13,6 +13,8 @@ Cada análisis se escribe en **[VIDEO.md](https://videomd.github.io/videomd/)**,
 
 [Sitio web](https://www.reavideo.ai) | [中文](README_zh.md) | [English](../README.md) | [Русский](README_ru.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | Español | [Português](README_pt.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | [Tiếng Việt](README_vi.md) | [বাংলা](README_bn.md) | [Türkçe](README_tr.md)
 
+**⚠️ Notice: rea-video is an open-source project. I have not launched and will not launch any cryptocurrency token. Any token using this project’s name is not affiliated with me, and I do not endorse it or accept fees from it. Please be cautious of scams.**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ La detección de material real acierta entre un 97 y un 99 %; en nueve clips ano
 
 ## Cómo funciona
 
-![Pipeline de rea-video](../docs/rea-flow_es.svg)
+![Pipeline de rea-video](../docs/flow/rea-flow_es.svg)
 
 1. Separar: corta el vídeo en planos y divide el audio en voz, música y efectos.
 2. Reunir evidencias: mide los fotogramas (cadencia, ruido del sensor, si toda la imagen se desplaza como un único plano, etiquetas AIGC en los metadatos), mira las imágenes (manos, texto, física) y escucha el audio (BPM, tonalidad, si se canta o se habla).

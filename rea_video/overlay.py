@@ -82,10 +82,12 @@ class _RapidOCR3:
     """rapidocr 3.x (used on Python >= 3.13, where rapidocr-onnxruntime has no release) behind the
     rapidocr-onnxruntime call shape: ocr(img) -> ([[box, text, score], ...] or None, elapse)."""
 
-    def __init__(self, rec_model_path: str | None = None, use_cls: bool | None = None):
+    def __init__(self, rec_model_path: str | None = None, use_cls: bool | None = None, intra_op_num_threads: int | None = None):
         from rapidocr import RapidOCR  # type: ignore
 
         params = {"Global.log_level": "warning"}
+        if intra_op_num_threads:
+            params["EngineConfig.onnxruntime.intra_op_num_threads"] = intra_op_num_threads
         if rec_model_path:  # its character list is read from the ONNX metadata, as with rapidocr-onnxruntime
             params["Rec.model_path"] = rec_model_path
         if use_cls is not None:
@@ -113,6 +115,11 @@ def get_ocr():
     if lang not in _OCR:
         try:
             kwargs = {"rec_model_path": str(rec_model(lang))} if lang in _REC_MODELS else {}
+            # as many threads as the separation models get: OCR runs alongside them, and more threads than the
+            # performance cores only fight over them (faster alone too, same reads)
+            from .stems import MODEL_THREADS
+
+            kwargs["intra_op_num_threads"] = MODEL_THREADS
             if lang in _NO_ANGLE_CLS:
                 kwargs["use_cls"] = False  # rapidocr-onnxruntime takes it as a constructor option too
             _OCR[lang] = _ocr_engine(**kwargs)

@@ -13,6 +13,8 @@ Mỗi bản phân tích được ghi theo định dạng **[VIDEO.md](https://vi
 
 [Trang web](https://www.reavideo.ai) | [中文](README_zh.md) | [English](../README.md) | [Русский](README_ru.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | [Español](README_es.md) | [Português](README_pt.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | Tiếng Việt | [বাংলা](README_bn.md) | [Türkçe](README_tr.md)
 
+**⚠️ Notice: rea-video is an open-source project. I have not launched and will not launch any cryptocurrency token. Any token using this project’s name is not affiliated with me, and I do not endorse it or accept fees from it. Please be cautious of scams.**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ Nhận diện tư liệu thật đạt 97–99%; trên 9 clip gắn nhãn thủ 
 
 ## Cơ chế hoạt động
 
-![Quy trình rea-video](../docs/rea-flow_vi.svg)
+![Quy trình rea-video](../docs/flow/rea-flow_vi.svg)
 
 1. Tách lớp: cắt video thành từng shot và tách âm thanh thành 3 track gồm lời thoại, nhạc nền và hiệu ứng.
 2. Thu thập bằng chứng: đo đạc thông số (nhịp lặp khung hình, nhiễu cảm biến, xem toàn khung hình có chuyển động như một mặt phẳng hay không, thẻ AIGC trong metadata), nhìn ảnh (bàn tay, chữ viết, quy luật vật lý) và lắng nghe âm thanh (BPM, giọng điệu, hát hay nói).

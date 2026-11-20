@@ -206,38 +206,67 @@ def global_motion(prev: np.ndarray, nxt: np.ndarray) -> dict | None:
     }
 
 
-def collect_samples(path: str, info: VideoInfo, shot: Shot, n_frames: int = 16, n_motion: int = 24,
-                    crop: tuple[float, float, float, float] | None = None) -> ShotSamples:
-    """crop: measure only this part of the frame (0-1 x, y, w, h), e.g. to leave out a sticker / GIF layer."""
-    total = shot.end_frame - shot.start_frame
-    trim = 2 if total > 12 else 0  # skip frames touching the transition
-    lo, hi = trim, max(trim + 1, total - trim)
-    usable = hi - lo
-    keep = set(np.linspace(lo, hi - 1, num=min(n_frames, usable)).round().astype(int).tolist())
-    motion_idx = set(np.linspace(lo + 1, hi - 1, num=min(n_motion, max(usable - 1, 0))).round().astype(int).tolist()) if usable > 1 else set()
-    out = ShotSamples()
-    prev_gray = None
-    for i, bgr in enumerate(iter_frames(path, info, ANALYSIS_W, start=shot.start, duration=shot.duration, crop=crop)):
-        if i >= total:
-            break
+class _Samples:
+    """One shot's samples, fed frame by frame (index from the shot's first frame)."""
+
+    def __init__(self, shot: Shot, n_frames: int, n_motion: int):
+        self.shot = shot
+        self.total = shot.end_frame - shot.start_frame
+        trim = 2 if self.total > 12 else 0  # skip frames touching the transition
+        self.lo, self.hi = trim, max(trim + 1, self.total - trim)
+        usable = self.hi - self.lo
+        self.keep = set(np.linspace(self.lo, self.hi - 1, num=min(n_frames, usable)).round().astype(int).tolist())
+        self.motion_idx = set(np.linspace(self.lo + 1, self.hi - 1, num=min(n_motion, max(usable - 1, 0))).round().astype(int).tolist()) \
+            if usable > 1 else set()
+        self.out = ShotSamples()
+        self.prev_gray = None
+
+    def add(self, i: int, bgr: np.ndarray) -> None:
+        out = self.out
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        if lo <= i < hi:
+        if self.lo <= i < self.hi:
             out.sharpness.append(float(cv2.Laplacian(gray, cv2.CV_32F).var()))
-            if i in keep:
+            if i in self.keep:
                 out.frames.append(bgr.copy())
-                out.frame_times.append(shot.t(shot.start_frame + i))
-            if prev_gray is not None and i - 1 >= lo:
-                d = cv2.absdiff(gray, prev_gray)
+                out.frame_times.append(self.shot.t(self.shot.start_frame + i))
+            if self.prev_gray is not None and i - 1 >= self.lo:
+                d = cv2.absdiff(gray, self.prev_gray)
                 out.pair_mad.append(float(d.mean()))
                 out.pair_zero.append(float((d == 0).mean()))
                 still = d < 6
                 out.pair_tnoise.append(float(np.mean(d[still])) if still.any() else 0.0)
-                if i in motion_idx:
-                    m = global_motion(prev_gray, gray)
+                if i in self.motion_idx:
+                    m = global_motion(self.prev_gray, gray)
                     if m is not None:
                         out.motion.append(m)
-        prev_gray = gray
-    return out
+        self.prev_gray = gray
+
+
+def collect_samples(path: str, info: VideoInfo, shot: Shot, n_frames: int = 16, n_motion: int = 24,
+                    crop: tuple[float, float, float, float] | None = None) -> ShotSamples:
+    """crop: measure only this part of the frame (0-1 x, y, w, h), e.g. to leave out a sticker / GIF layer."""
+    c = _Samples(shot, n_frames, n_motion)
+    for i, bgr in enumerate(iter_frames(path, info, ANALYSIS_W, start=shot.start, duration=shot.duration, crop=crop)):
+        if i >= c.total:
+            break
+        c.add(i, bgr)
+    return c.out
+
+
+def collect_all_samples(path: str, info: VideoInfo, shots: list[Shot], n_frames: int = 16, n_motion: int = 24) -> dict[int, ShotSamples]:
+    """collect_samples for every shot from one decode of the whole video (a decode per shot starts each time from the
+    key frame before the shot, so a video with many cuts decodes much of itself several times over)."""
+    cols = sorted((_Samples(s, n_frames, n_motion) for s in shots), key=lambda c: c.shot.start_frame)
+    k = 0
+    for g, bgr in enumerate(iter_frames(path, info, ANALYSIS_W)):
+        while k < len(cols) and g >= cols[k].shot.end_frame:
+            k += 1
+        if k == len(cols):
+            break
+        c = cols[k]
+        if g >= c.shot.start_frame:
+            c.add(g - c.shot.start_frame, bgr)
+    return {c.shot.index: c.out for c in cols}
 
 
 def _periodicity(flags: list[bool]) -> dict:

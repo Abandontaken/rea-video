@@ -185,3 +185,63 @@ def round_floats(obj: Any, nd: int = 4) -> Any:
     except ImportError:  # pragma: no cover
         pass
     return obj
+
+
+MAX_MODEL_THREADS = 8  # the ONNX models here stop getting faster past this, and would crowd out the picture analysis
+
+
+def _usable_cpus() -> int:
+    """Logical CPUs this process may run on (a container's or taskset's limit, where the OS reports one)."""
+    try:
+        return len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return os.cpu_count() or 4
+
+
+def _fast_cores() -> int | None:
+    """Cores that run a model thread at full speed: Apple silicon's performance cores (mixing in efficiency cores
+    makes a model slower, not faster), else physical cores (a hyper-thread pair shares one core's arithmetic)."""
+    import subprocess
+
+    if sys.platform == "darwin":
+        for key in ("hw.perflevel0.physicalcpu", "hw.physicalcpu"):
+            try:
+                n = int(subprocess.run(["sysctl", "-n", key], capture_output=True, text=True, timeout=2).stdout.strip())
+                if n > 0:
+                    return n
+            except (OSError, ValueError, subprocess.SubprocessError):
+                continue
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            cores, phys, core = set(), None, None
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                k, _, v = line.partition(":")
+                k = k.strip()
+                if k == "physical id":
+                    phys = v.strip()
+                elif k == "core id":
+                    core = v.strip()
+                elif not line.strip():
+                    if core is not None:
+                        cores.add((phys, core))
+                    phys = core = None
+            if core is not None:
+                cores.add((phys, core))
+            return len(cores) or None
+        except OSError:
+            return None
+    return None
+
+
+def model_threads() -> int:
+    """Threads for each ONNX model (sound separation, OCR): $REA_VIDEO_THREADS if set, else this machine's full-speed
+    cores, never more than the CPUs this process may use, at most MAX_MODEL_THREADS. More threads than that only make
+    the models and the picture analysis fight over the same cores. (The thread count can move a model's output by
+    ~1e-7, far below what a 16-bit file keeps.)"""
+    env = os.getenv("REA_VIDEO_THREADS", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    usable = _usable_cpus()
+    fast = _fast_cores() or max(1, usable // 2)
+    return max(1, min(fast, usable, MAX_MODEL_THREADS))

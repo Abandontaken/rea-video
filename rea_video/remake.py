@@ -1,6 +1,7 @@
 """Rebuild a video on the original timeline from remake results.
 
-- generated clips (capsule-cinema)  -> trimmed / padded to the original shot length
+- generated clips (capsule-cinema)  -> retimed to the original shot, frame-exact: the clip's moves are warped onto
+                                       the original's (where they start, peak and stop), within the speed limits
 - still_motion / static_hold shots  -> rebuilt locally from one image using the measured
                                        zoom/pan (deterministic, no model call)
 - everything else                    -> original footage kept (marked in the compare video)
@@ -15,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from .util import LOG, read_json, read_image
 
@@ -78,19 +80,154 @@ def _clip_seconds(src: Path) -> float:
         return 0.0
 
 
-def _fit_clip(src: Path, out: Path, duration: float, size: tuple[int, int], fps: float) -> Path:
+def frame_bounds(shots: list[dict], fps: float) -> dict[int, tuple[int, int]]:
+    """{shot index: (first frame, frame count)} on the original's frame grid. Every segment of a remake is cut to
+    exactly its count, so a cut lands on the original's frame and the lengths never add up to a drift against the
+    original sound (seconds rounded per segment lose or gain a frame each, a few tenths of a second by the end)."""
+    starts = [int(round(sh["start"] * fps)) for sh in shots]
+    ends = starts[1:] + [int(round(shots[-1]["end"] * fps))] if shots else []
+    return {sh["index"]: (a, max(1, z - a)) for sh, a, z in zip(shots, starts, ends)}
+
+
+def _exact(fps: float, frames: int) -> tuple[str, list[str]]:
+    """The tail of a filter chain and the output flags that make a segment exactly `frames` frames at `fps`: the last
+    frame held when the source runs short, the rest cut off."""
+    return (f"fps={fps},tpad=stop_mode=clone:stop_duration={frames / fps + 1:.3f}",
+            ["-frames:v", str(frames), "-r", f"{fps}"])
+
+
+WARP_W = 96          # width the motion of a clip is measured at
+WARP_STEP_COST = 0.04  # how much a step away from the clip's mean speed costs against matching the motion better
+
+
+def motion_curve(frames) -> np.ndarray:
+    """How much the picture moves at each frame, 0-1 of its largest value: the change in the most-changed block of a
+    12 x 8 grid (a small subject moving counts), held 3 frames and smoothed. Flat (all zero) when nothing moves."""
+    out, prev = [], None
+    for f in frames:
+        g = (f if f.ndim == 2 else cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)).astype(np.float32)
+        out.append(0.0 if prev is None else float(cv2.resize(np.abs(g - prev), (12, 8), interpolation=cv2.INTER_AREA).max()) / 255.0)
+        prev = g
+    c = np.array(out)
+    if len(c) >= 3:
+        c = np.array([c[max(0, i - 2):i + 1].max() for i in range(len(c))])
+        c = np.convolve(c, np.ones(3) / 3, mode="same")
+    top = float(c.max()) if len(c) else 0.0
+    return c / top if top >= 0.03 else np.zeros_like(c)
+
+
+def warp_map(ref: np.ndarray, gen: np.ndarray) -> list[int] | None:
+    """For each frame of the original shot (ref), the frame of the generated clip (gen) to show: a monotonic path that
+    lines the clip's moves up with the original's (dynamic time warping on the motion curves), each step 0-3 clip
+    frames (at most MAX_SPEEDUP; holds cost more), ending where the even fit would (the whole clip, or as much as
+    MAX_SPEEDUP allows). None when either has no motion to line up: the even fit is as good."""
+    n, m = len(ref), len(gen)
+    if n < 4 or m < 2 or not ref.any() or not gen.any():
+        return None
+    r = max(1 / MAX_SLOWDOWN, min(MAX_SPEEDUP, m / n))
+    end = min(m - 1, int(round((n - 1) * r)))
+    steps = (0, 1, 2, 3)
+    pen = {k: WARP_STEP_COST * (k - r) ** 2 for k in steps}
+    INF = 1e18
+    D = np.full((n, m), INF)
+    back = np.zeros((n, m), np.int8)
+    D[0, 0] = abs(ref[0] - gen[0])
+    for i in range(1, n):
+        best = np.full(m, INF)
+        arg = np.zeros(m, np.int8)
+        for k in steps:
+            prev = np.full(m, INF)
+            prev[k:] = D[i - 1, :m - k] if k else D[i - 1]
+            cand = prev + pen[k]
+            better = cand < best
+            best[better], arg[better] = cand[better], k
+        D[i] = best + np.abs(ref[i] - gen)
+        back[i] = arg
+    if D[n - 1, end] >= INF:
+        return None
+    path, j = [end], end
+    for i in range(n - 1, 0, -1):
+        j -= int(back[i, j])
+        path.append(j)
+    return path[::-1]
+
+
+def _frames_at(src: Path, fps: float, width: int, start_frame: int = 0, count: int | None = None, gray: bool = False):
+    """Frames of src resampled to fps, from frame start_frame (count of them, or to the end), at the given width."""
+    from .media import iter_frames, video_info
+
+    info = video_info(str(src))
+    it = iter_frames(str(src), info, width, start=start_frame / fps if start_frame else None, gray=gray, fps=fps)
+    for k, f in enumerate(it):
+        if count is not None and k >= count:
+            break
+        yield f
+
+
+def _warp_clip(src: Path, out: Path, path: list[int], size: tuple[int, int], fps: float) -> Path:
+    """Write the clip's frames in the order path gives (each clip frame repeated as often as it is used): exactly
+    len(path) frames, streamed, never the whole clip in memory."""
     w, h = size
-    speed = fit_speed(_clip_seconds(src), duration)
-    vf = (f"setpts=PTS/{speed:.4f},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},fps={fps},"
-          f"tpad=stop_mode=clone:stop_duration={duration:.3f},trim=duration={duration:.3f},setpts=PTS-STARTPTS")
-    _ff(["-i", str(src), "-an", "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)])
+    need: dict[int, int] = {}
+    for j in path:
+        need[j] = need.get(j, 0) + 1
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps}",
+                             "-i", "-", "-frames:v", str(len(path)), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)],
+                            stdin=subprocess.PIPE)
+    assert proc.stdin is not None
+    written, last = 0, None
+    for j, f in enumerate(_frames_at(src, fps, max(w, int(round(h * 16 / 9))))):
+        if j > path[-1]:
+            break
+        fh, fw = f.shape[:2]
+        s = max(w / fw, h / fh)  # cover, then centre crop: as the even fit's scale + crop
+        f = cv2.resize(f, (max(w, int(round(fw * s))), max(h, int(round(fh * s)))), interpolation=cv2.INTER_AREA)
+        y0, x0 = (f.shape[0] - h) // 2, (f.shape[1] - w) // 2
+        last = np.ascontiguousarray(f[y0:y0 + h, x0:x0 + w])
+        for _ in range(need.get(j, 0)):
+            proc.stdin.write(last.tobytes())
+            written += 1
+    while last is not None and written < len(path):  # the clip decoded shorter than measured: hold its last frame
+        proc.stdin.write(last.tobytes())
+        written += 1
+    proc.stdin.close()
+    if proc.wait() != 0 or written == 0:
+        raise RuntimeError(f"warp failed for {src}")
     return out
 
 
-def _original_segment(src: Path, out: Path, start: float, duration: float, size: tuple[int, int], fps: float) -> Path:
+def fit_to_original(src: Path, out: Path, original: Path, first: int, frames: int, size: tuple[int, int], fps: float) -> str:
+    """A generated clip into the original shot's frames: warped so its moves land where the original's do, else
+    sped up or slowed down evenly. Returns how ("warped" / "even")."""
+    try:
+        ref = motion_curve(_frames_at(original, fps, WARP_W, first, frames, gray=True))
+        gen = motion_curve(_frames_at(src, fps, WARP_W, gray=True))
+        path = warp_map(ref[:frames], gen) if len(ref) >= frames - 1 else None
+        if path:
+            _warp_clip(src, out, path + [path[-1]] * (frames - len(path)), size, fps)
+            return "warped"
+    except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as exc:
+        LOG.warning("timing the clip to the original failed (%s); fitting it evenly", str(exc)[:120])
+    _fit_clip(src, out, frames, size, fps)
+    return "even"
+
+
+def _fit_clip(src: Path, out: Path, frames: int, size: tuple[int, int], fps: float) -> Path:
     w, h = size
-    _ff(["-ss", f"{start:.4f}", "-i", str(src), "-t", f"{duration:.4f}", "-an",
-         "-vf", f"scale={w}:{h},fps={fps}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)])
+    speed = fit_speed(_clip_seconds(src), frames / fps)
+    tail, flags = _exact(fps, frames)
+    vf = f"setpts=PTS/{speed:.4f},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},{tail}"
+    _ff(["-i", str(src), "-an", "-vf", vf, *flags, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)])
+    return out
+
+
+def _original_segment(src: Path, out: Path, first: int, frames: int, size: tuple[int, int], fps: float) -> Path:
+    """Frames first .. first + frames - 1 of src: seeking half a frame early, so the first one is never skipped, and
+    its time reset to zero, so the frame-rate filter does not repeat it (which would shift the whole segment a frame)."""
+    w, h = size
+    tail, flags = _exact(fps, frames)
+    _ff(["-ss", f"{max(0.0, (first - 0.5) / fps):.6f}", "-i", str(src), "-an",
+         "-vf", f"setpts=PTS-STARTPTS,scale={w}:{h},{tail}", *flags, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)])
     return out
 
 
@@ -134,7 +271,8 @@ def overlay_cues(b: dict, spans: list[tuple[float, float]]) -> tuple[list[dict],
     return cues, stickers
 
 
-def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: float) -> dict:
+def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: float,
+               bounds: dict[int, tuple[int, int]] | None = None) -> dict:
     """Generation-unit clips (one call made several shots: results keyed "G2", or "G4-1", "G4-2" for the parts of a
     long shot) -> one clip per shot. The parts are fitted to their lengths and joined; the shots are then cut at the
     source's own cut points, because the model was given the source stretch and follows its timing.
@@ -146,6 +284,7 @@ def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: f
     if not by_unit:
         return {}
     by_index = {r["index"]: r for r in b["shots"]}
+    bounds = bounds or frame_bounds(b["shots"], fps)
     out: dict[str, dict] = {}
     udir.mkdir(parents=True, exist_ok=True)
     for uid, got in by_unit.items():
@@ -155,7 +294,7 @@ def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: f
         fitted = []
         for v in got:
             f = udir / f"{uid}_p{v.get('part', 1)}.mp4"
-            _fit_clip(Path(v["video"]), f, float(v["trim_to"]), size, fps)
+            _fit_clip(Path(v["video"]), f, max(1, int(round(float(v["trim_to"]) * fps))), size, fps)
             fitted.append(f)
         whole = fitted[0]
         if len(fitted) > 1:
@@ -163,15 +302,15 @@ def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: f
             lst.write_text("".join(f"file '{f.resolve()}'\n" for f in fitted), encoding="utf-8")
             whole = udir / f"{uid}.mp4"
             _ff(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(whole)])
-        t = 0.0
+        at = 0
         for i in got[0].get("shots") or []:
-            r = by_index.get(i)
-            if not r:
+            if i not in by_index or i not in bounds:
                 continue
             clip = udir / f"shot_{int(i):03d}.mp4"
-            _original_segment(whole, clip, t, r["duration"], size, fps)
+            n = bounds[i][1]
+            _original_segment(whole, clip, at, n, size, fps)
             out[str(i)] = {"video": str(clip), "unit": uid}
-            t += r["duration"]
+            at += n
     return out
 
 
@@ -195,18 +334,23 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
     fps = float(b["source"]["fps"]) if b["source"]["fps"] and b["source"]["fps"] <= 60 else 30.0
     results = {**results, **{str(k): v for k, v in (extra or {}).items()}}
     # unit clips (one call, several shots) become per-shot clips; a shot's own clip, given later, still wins
-    results = {**unit_shots(b, results, seg_dir / "units", (w, h), fps), **{k: v for k, v in results.items() if not (isinstance(v, dict) and v.get("unit"))}}
+    bounds = frame_bounds(b["shots"], fps)
+    results = {**unit_shots(b, results, seg_dir / "units", (w, h), fps, bounds),
+               **{k: v for k, v in results.items() if not (isinstance(v, dict) and v.get("unit"))}}
     parts, legend = [], []
+    timing: dict[str, str] = {}  # generated shots: warped onto the original's moves, or fitted evenly
     for sh in b["shots"]:
-        dur = sh["duration"]
+        first, n = bounds[sh["index"]]
+        dur = n / fps
         seg = seg_dir / f"shot_{int(sh['index']):03d}.mp4"  # 不用 JSON 里的 id 拼路径，防 ../
         res = results.get(str(sh["index"])) or {}
         job = jobs.get(sh["index"], {})
         if res.get("video") and Path(res["video"]).is_file():
-            _fit_clip(Path(res["video"]), seg, dur, (w, h), fps)
+            how = fit_to_original(Path(res["video"]), seg, src, first, n, (w, h), fps)
             legend.append((sh["index"], "generated"))
+            timing[str(sh["index"])] = how
         elif code_video and sh["base"]["label"] == "code_render" and Path(code_video).is_file():
-            _original_segment(Path(code_video), seg, sh["start"], dur, (w, h), fps)
+            _original_segment(Path(code_video), seg, first, n, (w, h), fps)
             legend.append((sh["index"], "code"))
         elif job.get("executor") == "local_ffmpeg" or sh["base"]["label"] in ("still_motion", "static_hold"):
             m = sh["replication"].get("local", {})
@@ -215,7 +359,7 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
                                 m.get("pan_dir_deg", 0.0), m.get("analysis_width", 480))
             legend.append((sh["index"], "local_still"))
         else:
-            _original_segment(src, seg, sh["start"], dur, (w, h), fps)
+            _original_segment(src, seg, first, n, (w, h), fps)
             legend.append((sh["index"], "original"))
         parts.append(seg)
     lst = seg_dir / "concat.txt"
@@ -257,7 +401,8 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
         except subprocess.CalledProcessError:
             if not with_text:
                 raise
-    log = {"legend": legend, "remake": str(final), "compare": str(compare), **({"overlays": overlay_log} if overlays else {})}
+    log = {"legend": legend, "remake": str(final), "compare": str(compare), **({"timing": timing} if timing else {}),
+           **({"overlays": overlay_log} if overlays else {})}
     (out_dir / "assemble_log.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
     LOG.info("remake -> %s ; compare -> %s", final, compare)
     return json.dumps(log, ensure_ascii=False)

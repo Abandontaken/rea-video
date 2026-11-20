@@ -13,6 +13,8 @@
 
 [ওয়েবসাইট](https://www.reavideo.ai) | [中文](README_zh.md) | [English](../README.md) | [Русский](README_ru.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | [Español](README_es.md) | [Português](README_pt.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | [Tiếng Việt](README_vi.md) | বাংলা | [Türkçe](README_tr.md)
 
+**⚠️ Notice: rea-video is an open-source project. I have not launched and will not launch any cryptocurrency token. Any token using this project’s name is not affiliated with me, and I do not endorse it or accept fees from it. Please be cautious of scams.**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ rea-video বিনামূল্যে ও ওপেন সোর্স। স
 
 ## কীভাবে কাজ করে
 
-![rea-video পাইপলাইন](../docs/rea-flow_bn.svg)
+![rea-video পাইপলাইন](../docs/flow/rea-flow_bn.svg)
 
 1. ভাগ করা: ভিডিওকে শটে কাটা, আর অডিওকে কণ্ঠ, মিউজিক আর ইফেক্টে আলাদা করা।
 2. প্রমাণ জোগাড়: মাপা (ফ্রেমের ছন্দ, সেন্সর নয়েজ, পুরো ছবিটা একটি সমতল প্লেনের মতো একসাথে নড়ে কি না, মেটাডেটায় AIGC ট্যাগ), দেখা (হাত, লেখা, পদার্থবিদ্যা) আর শোনা (BPM, স্কেল, গান নাকি কথা)।

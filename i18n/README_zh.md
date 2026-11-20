@@ -13,6 +13,8 @@
 
 [官网](https://www.reavideo.ai) | 中文 | [English](../README.md) | [Русский](README_ru.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | [Español](README_es.md) | [Português](README_pt.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | [Tiếng Việt](README_vi.md) | [বাংলা](README_bn.md) | [Türkçe](README_tr.md)
 
+**⚠️ 声明：rea-video 是一个开源项目，本人从未发行、也不会发行任何加密代币。任何使用本项目名称的代币均与本人无关，我也不会为其背书或领取相关收益。请勿相信，谨防受骗。**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ rea-video 免费开源，赞助商的支持让它能持续维护。
 
 ## 怎么判断的
 
-![rea-video 流程](../docs/rea-flow.svg)
+![rea-video 流程](../docs/flow/rea-flow.svg)
 
 1. 切镜头：把视频按镜头切开，声音拆成人声、配乐、音效。
 2. 取证据：测画面（帧率规律、噪点、是不是整张图在推拉、文件里有没有 AIGC 标识）；看图（手指、文字、物理细节对不对）；听声音（BPM、调性、是唱还是说）。

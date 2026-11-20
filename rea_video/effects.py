@@ -89,7 +89,12 @@ def extract_effects(src: str | Path, out_dir: str | Path) -> dict:
     try:
         import onnxruntime as ort
 
-        session = ort.InferenceSession(str(ensure_model()), providers=["CPUExecutionProvider"])
+        from .stems import MODEL_THREADS
+
+        model = ensure_model()
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = MODEL_THREADS
+        session = ort.InferenceSession(str(model), so, providers=["CPUExecutionProvider"])
     except Exception as e:  # offline / no onnxruntime: the report falls back to effects found on the mix
         LOG.warning("effects separation unavailable: %s", e)
         return {"ok": False, "reason": f"{type(e).__name__}: {e}"}

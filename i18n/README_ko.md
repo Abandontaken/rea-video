@@ -13,6 +13,8 @@
 
 [웹사이트](https://www.reavideo.ai) | [中文](README_zh.md) | [English](../README.md) | [Русский](README_ru.md) | [日本語](README_ja.md) | 한국어 | [Español](README_es.md) | [Português](README_pt.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | [Tiếng Việt](README_vi.md) | [বাংলা](README_bn.md) | [Türkçe](README_tr.md)
 
+**⚠️ Notice: rea-video is an open-source project. I have not launched and will not launch any cryptocurrency token. Any token using this project’s name is not affiliated with me, and I do not endorse it or accept fees from it. Please be cautious of scams.**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ rea-video는 무료 오픈소스입니다. 스폰서의 지원으로 꾸준히 �
 
 ## 작동 방식
 
-![rea-video 파이프라인](../docs/rea-flow_ko.svg)
+![rea-video 파이프라인](../docs/flow/rea-flow_ko.svg)
 
 1. 분할: 영상을 샷 단위로 자르고, 오디오는 음성·음악·효과음으로 나눕니다.
 2. 근거 수집: 프레임을 측정하고(프레임 케이던스, 센서 노이즈, 화면 전체가 하나의 평면처럼 패닝하는지, 메타데이터의 AIGC 태그), 이미지를 보고(손, 글자, 물리 법칙), 소리를 듣습니다(BPM, 키, 노래인지 말인지).

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""生成 README 用的流程图 docs/rea-flow.svg（中文）和 docs/rea-flow_en.svg（英文）和 docs/rea-flow_ja.svg（日文），以及韩 / 俄 / 西 / 葡 / 法 / 德 / 越 / 孟加拉版 docs/rea-flow_{ko,ru,es,pt,fr,de,vi,bn}.svg。
+"""生成 README 用的流程图 docs/flow/rea-flow.svg（中文）和 docs/flow/rea-flow_en.svg（英文）和 docs/flow/rea-flow_ja.svg（日文），以及韩 / 俄 / 西 / 葡 / 法 / 德 / 越 / 孟加拉版 docs/flow/rea-flow_{ko,ru,es,pt,fr,de,vi,bn}.svg。
 
-用法：python3 scripts/render_flow_svg.py [输出目录，默认 docs]
+用法：python3 scripts/render_flow_svg.py [输出目录，默认 docs/flow]
 
 画的是一个具体例子：一条带货视频切成 5 个镜头 + 声音，每列一个镜头，每行一步
 （切开 / 取证据 / 判断 / 复刻方案）。改文案改顶部的 ZH / EN / JA / KO / RU / ES / PT / FR / DE / VI / BN 字典即可。
@@ -807,7 +807,7 @@ def build(S, lang):
 
 
 if __name__ == "__main__":
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "docs"
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "docs" / "flow"
     (out / "rea-flow.svg").write_text(build(ZH, "zh"), encoding="utf-8")
     (out / "rea-flow_en.svg").write_text(build(EN, "en"), encoding="utf-8")
     (out / "rea-flow_ja.svg").write_text(build(JA, "ja"), encoding="utf-8")

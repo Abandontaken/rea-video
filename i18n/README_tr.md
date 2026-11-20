@@ -13,6 +13,8 @@ Her çözümleme, ajanların katman katman okuduğu açık bir format olan **[VI
 
 [Web sitesi](https://www.reavideo.ai) | [中文](README_zh.md) | [English](../README.md) | [Русский](README_ru.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | [Español](README_es.md) | [Português](README_pt.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | [Tiếng Việt](README_vi.md) | [বাংলা](README_bn.md) | Türkçe
 
+**⚠️ Notice: rea-video is an open-source project. I have not launched and will not launch any cryptocurrency token. Any token using this project’s name is not affiliated with me, and I do not endorse it or accept fees from it. Please be cautious of scams.**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ Gerçek materyal tespiti %97–99; elle etiketlenmiş dokuz klipte çekim sını
 
 ## Nasıl çalışır
 
-![rea-video iş akışı](../docs/rea-flow_tr.svg)
+![rea-video iş akışı](../docs/flow/rea-flow_tr.svg)
 
 1. Ayır: videoyu çekimlere böl ve sesi konuşma, müzik ve efektler olarak ayır.
 2. Kanıt topla: ölç (kare temposu, sensör gürültüsü, görüntünün tamamının tek bir düz düzlem gibi hareket edip etmediği, meta verideki AIGC etiketleri), bak (eller, yazılar, fizik) ve dinle (BPM, ton, şarkı mı konuşma mı).

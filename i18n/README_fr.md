@@ -13,6 +13,8 @@ Chaque analyse est écrite au format **[VIDEO.md](https://videomd.github.io/vide
 
 [Site web](https://www.reavideo.ai) | [中文](README_zh.md) | [English](../README.md) | [Русский](README_ru.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | [Español](README_es.md) | [Português](README_pt.md) | Français | [Deutsch](README_de.md) | [Tiếng Việt](README_vi.md) | [বাংলা](README_bn.md) | [Türkçe](README_tr.md)
 
+**⚠️ Notice: rea-video is an open-source project. I have not launched and will not launch any cryptocurrency token. Any token using this project’s name is not affiliated with me, and I do not endorse it or accept fees from it. Please be cautious of scams.**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ La détection des assets réels atteint 97 à 99 % ; sur neuf clips annotés à 
 
 ## Comment ça marche
 
-![Pipeline rea-video](../docs/rea-flow_fr.svg)
+![Pipeline rea-video](../docs/flow/rea-flow_fr.svg)
 
 1. Découpage : la vidéo est coupée en plans, et le son séparé en voix, musique et effets.
 2. Collecte des indices : mesures sur les images (cadence d'images, bruit du capteur, image entière qui bouge d'un bloc comme un seul plan, tags AIGC dans les métadonnées) ; examen visuel (mains, texte, physique) ; écoute (BPM, tonalité, chant ou parole).

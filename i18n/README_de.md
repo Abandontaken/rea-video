@@ -13,6 +13,8 @@ Jede Analyse wird im Format **[VIDEO.md](https://videomd.github.io/videomd/)** g
 
 [Website](https://www.reavideo.ai) | [中文](README_zh.md) | [English](../README.md) | [Русский](README_ru.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | [Español](README_es.md) | [Português](README_pt.md) | [Français](README_fr.md) | Deutsch | [Tiếng Việt](README_vi.md) | [বাংলা](README_bn.md) | [Türkçe](README_tr.md)
 
+**⚠️ Notice: rea-video is an open-source project. I have not launched and will not launch any cryptocurrency token. Any token using this project’s name is not affiliated with me, and I do not endorse it or accept fees from it. Please be cautious of scams.**
+
 [![Stars](https://img.shields.io/github/stars/JuneYaooo/rea-video?style=flat)](https://github.com/JuneYaooo/rea-video/stargazers)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![Agent](https://img.shields.io/badge/runs%20in-Claude%20Code%20%7C%20Codex-8A2BE2)
@@ -177,7 +179,7 @@ Echte Assets werden zu 97–99 % erkannt; bei neun von Hand annotierten Clips we
 
 ## Wie es funktioniert
 
-![rea-video-Pipeline](../docs/rea-flow_de.svg)
+![rea-video-Pipeline](../docs/flow/rea-flow_de.svg)
 
 1. Zerlegen: Video in Shots schneiden, Ton in Stimme, Musik und Effekte trennen.
 2. Belege sammeln: Frames vermessen (Frame-Takt, Sensorrauschen, ob sich das ganze Bild wie eine einzige Ebene verschiebt, AIGC-Tags in den Metadaten), Bilder anschauen (Hände, Text, Physik), hinhören (BPM, Tonart, Gesang oder Sprache).
