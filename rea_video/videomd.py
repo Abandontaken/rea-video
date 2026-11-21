@@ -188,9 +188,11 @@ def _shot_file(r: dict) -> str:
 
 def _topics(b: dict) -> list[tuple[str, str, str, list[str]]]:
     """(file stem, title, when to read it, report section lines)."""
+    from .moments import videomd as moments_md
     from .report import _audio_md, _cast_md, _content_md, _remake_md, _visual_md, packaging_md
 
     return [
+        ("moments", T("特殊时刻", "Special moments"), T("魔术揭秘、反转、高潮、穿帮：时间、关键帧、片段", "reveals, twists, climaxes, goofs: times, key frames, clips"), moments_md(b)),
         ("content", T("内容与结构", "Content and structure"), T("要讲什么、叙事线、结构时间轴、台词", "what it says, the narrative line, structure, the script"), _content_md(b)),
         ("cast", T("角色、场景与道具", "Cast, scenes and props"), T("做角色参考图、写首帧提示词", "reference images for characters, first-frame prompts"), _cast_md(b)),
         ("sound", T("声音", "Sound"), T("人声、BGM、音效、节拍和来源", "voice, music, sound effects, beats and sources"), _audio_md(b)),
@@ -334,6 +336,12 @@ def _next_steps(b: dict) -> list[str]:
                    "`rea-video code-remake <本目录>` 只出粒子 / 数据可视化这类画面的快速草稿",
                    "Code-rendered shots are best rebuilt in an HTML video framework (such as HyperFrames) from the rhythm and key frames in "
                    "`video/rhythm.md`; `rea-video code-remake <this dir>` only makes a quick draft for particles / data-visualisation pictures"))
+    mo = b.get("moments") or {}
+    if mo.get("status") == "pending" and mo.get("genre") in ("magic", "drama"):  # other videos: only when the user asks
+        L.append(T("特殊时刻（魔术揭秘、反转、高潮、穿帮）还没找：`rea-video moments <本目录>`，按输出看图作答" +
+                   ("；这是魔术视频，建议做" if mo.get("genre") == "magic" else ""),
+                   "Special moments (reveals, twists, climaxes, goofs) not looked for yet: `rea-video moments <this dir>`, answer from the images" +
+                   ("; a magic video: worth doing" if mo.get("genre") == "magic" else "")))
     if (b.get("production_plan") or {}).get("drive"):
         L.append(T("舞蹈 / 动作镜头不走首尾帧生成：`rea-video drive <本目录>` 出去掉字幕、按停顿切好的驱动视频，生成好的段用 `--join` 拼回；路线和提示词在 `video/remake.md` 的「动作驱动」",
                    "Dance / action shots are not generated from first / last frames: `rea-video drive <this dir>` writes caption-free drive clips cut at calm moments, "

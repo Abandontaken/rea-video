@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from .media import extract_audio
-from .prosody import emotion_tag
+from .prosody import emotion_tag, event_tag
 from .stems import models_dir
 from .util import ASR_LANGS, LOG, fetch, sha256_file
 
@@ -192,8 +192,9 @@ def _sentences(start: float, end: float, text: str) -> list[dict]:
     return out
 
 
-def _decode(rec, samples: np.ndarray, streaming: bool) -> tuple[str, str, str]:
-    """One spoken stretch -> (text, language heard, emotion heard); the last two empty when the recognizer does not say."""
+def _decode(rec, samples: np.ndarray, streaming: bool) -> tuple[str, str, str, str]:
+    """One spoken stretch -> (text, language heard, emotion heard, sound event heard: laughter / applause / cry); the last
+    three empty when the recognizer does not say."""
     st = rec.create_stream()
     st.accept_waveform(SR, samples)
     if streaming:
@@ -201,10 +202,10 @@ def _decode(rec, samples: np.ndarray, streaming: bool) -> tuple[str, str, str]:
         st.input_finished()
         while rec.is_ready(st):
             rec.decode_stream(st)
-        return (rec.get_result(st) or "").strip(), "", ""
+        return (rec.get_result(st) or "").strip(), "", "", ""
     rec.decode_stream(st)
     return ((st.result.text or "").strip(), str(getattr(st.result, "lang", "") or "").strip("<|>"),
-            emotion_tag(getattr(st.result, "emotion", "")))
+            emotion_tag(getattr(st.result, "emotion", "")), event_tag(getattr(st.result, "event", "")))
 
 
 def transcribe(audio: str | Path, language: str | None = None, threads: int = 2, turns: list[dict] | None = None) -> dict:
@@ -235,7 +236,7 @@ def transcribe(audio: str | Path, language: str | None = None, threads: int = 2,
             engine = "sensevoice-small-int8 (sherpa-onnx)"
         lines, langs = [], []
         for start, samples in _by_speaker(_stretches(x, vad_model), turns):
-            text, heard, emotion = _decode(rec, samples, streaming=lang == "bn")
+            text, heard, emotion, event = _decode(rec, samples, streaming=lang == "bn")
             if len(text.strip("。，、！？.,!? ")) < 1:
                 continue
             got = _sentences(start, start + len(samples) / SR, text)
@@ -246,6 +247,8 @@ def transcribe(audio: str | Path, language: str | None = None, threads: int = 2,
                 got = [dict(ln, speaker=who) for ln in got] if who else got
             if emotion:  # SenseVoice hears it per stretch; every sentence cut from the stretch shares it
                 got = [dict(ln, emotion=emotion) for ln in got]
+            if event:  # laughter / applause heard in the stretch: a reaction, for the special moments
+                got = [dict(ln, event=event) for ln in got]
             if heard:
                 got = [dict(ln, lang=heard) for ln in got]
             lines += got

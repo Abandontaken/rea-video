@@ -126,7 +126,7 @@ def decode_fingerprint() -> str:
 def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, whole_vlm: bool = True,
               ocr: bool = True, workers: int = 3, engine: str | None = None, max_shots_vlm: int = 60,
               platform_meta: dict | None = None, stems: bool = True, memory: bool = True, packaging: bool = True, asr: bool = True,
-              lang: str = "zh", speakers: bool = True, survey: bool = True) -> dict:
+              lang: str = "zh", speakers: bool = True, survey: bool = True, moments: bool = True) -> dict:
     lang = set_lang(lang)
     require_tools()
     t0 = time.time()
@@ -326,7 +326,7 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
             LOG.warning("--vlm requested but no VLM config found (REA_VLM_* / VIDEO_ANALYSIS_* / GEMINI3_*); continuing without it")
             vlm_info = {"used": False, "requested": True, "status": "not_configured", "error": "no_config"}
         else:
-            client = vlm_client or VLMClient(cfg, out / "vlm_cache")
+            client = vlm_client = vlm_client or VLMClient(cfg, out / "vlm_cache")
             vlm_info = {"used": False, "requested": True, "status": "failed", "model": cfg.describe(), "media": cfg.media, "errors": []}
 
             def run_unit(unit: list[dict]) -> None:
@@ -465,6 +465,14 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
     }
     if pack is not None:
         breakdown["packaging"] = round_floats(pack)
+    if moments:
+        mclient = vlm_client if vlm_info.get("used") else None
+        if mclient is None and use_vlm:  # asked for a VLM but only a Gemini key is set: Gemini's own API reads the moments
+            from . import gemini
+
+            if gemini.configured():
+                mclient = gemini.GeminiClient()
+        _moments(breakdown, out, track, stem_info, mclient)
     if memory:
         from .memory import reapply
 
@@ -483,6 +491,24 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
     finalize(breakdown, out, engine=engine)
     LOG.info("done in %.1fs -> %s", time.time() - t0, out)
     return breakdown
+
+
+def _moments(b: dict, out: Path, track, stem_info: dict, client) -> None:
+    """Special moments: the tool's hints from sound and picture always (free); with a VLM, its look (a few calls)."""
+    from . import moments as mo
+
+    try:
+        voc = Path(stem_info["vocals"]) if stem_info.get("ok") else None
+        b["moments"] = {"genre": mo.genre(b), "status": "pending",
+                        "hints": mo.hints((b.get("speech") or {}).get("lines") or [], voc, track, b["source"]["duration"])}
+        if client is not None:
+            from .vlm import prompt_lang_note
+
+            LOG.info("special moments: the VLM looks for them (%s)", b["moments"]["genre"] or "any video")
+            got = mo.run(b, out, asker=mo.vlm_asker(client, prompt_lang_note()))
+            LOG.info("special moments: %s", got)
+    except Exception as exc:  # noqa: BLE001  an extra: the breakdown goes on without it
+        LOG.warning("special moments skipped: %s", str(exc)[:160])
 
 
 DOUBT_CAP = 0.7
@@ -1124,6 +1150,13 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
     breakdown["production_plan"] = production_plan(breakdown, out, engine=engine)
     summary["production"] = breakdown["production_plan"]["summary"]
     breakdown["summary"] = summary
+    if (breakdown.get("moments") or {}).get("items"):
+        from .moments import export as export_moments
+
+        try:  # clips and frames of the special moments: seeks only, a failure must not lose the report
+            export_moments(breakdown, out)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("special moments export failed: %s", str(exc)[:160])
     write_json(out / "breakdown.json", breakdown, compact=True)
     from .report import write_reports
 

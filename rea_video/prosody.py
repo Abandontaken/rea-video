@@ -30,6 +30,14 @@ def emotion_tag(raw) -> str:
     return s if s in EMOTION else ""
 
 
+EVENTS = {"laughter": "laughter", "applause": "applause", "cry": "cry"}
+
+
+def event_tag(raw) -> str:
+    """SenseVoice's sound-event token ("<|Laughter|>") to laughter / applause / cry; speech, BGM and unknown give ""."""
+    return EVENTS.get(str(raw or "").strip("<|>").lower(), "")
+
+
 def units(text: str) -> tuple[int, str]:
     """Spoken units in a line: characters for CJK text, words otherwise."""
     n = len(_CJK.findall(text or ""))

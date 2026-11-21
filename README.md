@@ -51,6 +51,13 @@ You can also hook up a video-capable model (Gemini or Doubao both work) by givin
 
 > Reports are written in whichever language you ask in (Chinese or English). The example reports below are in English.
 
+## Updates
+
+- **2026-11-19**: Magic videos: finds the reveal of each trick, frame by frame with a slow-motion clip. Highlights (twists, climaxes, goofs) when you ask for them.
+- **2026-11-17**: Better timing of cuts and moves.
+- **2026-11-15**: Remake plans are made for the model you choose. The report is split into a breakdown part and a remake part.
+- **2026-11-11**: VIDEO.md breakdown package, rewritten report, sound effects separated on their own track.
+
 ## What it can break down
 
 | Video type | Examples | What you get |
@@ -70,6 +77,8 @@ Besides how the visuals were made, every breakdown also covers:
 - Editing: where the cuts are, how fast, whether they hit the beat
 - Audio: human or AI voice, AI or library music and its BPM, where each sound effect lands
 - Material you'll need to supply yourself: screen recordings, screenshots, product photos
+
+For magic videos it also finds the reveal of each trick: when and how the object changes, laid out frame by frame and zoomed in, plus a slow-motion clip. Ask for highlights and it pulls out twists, climaxes and goofs too.
 
 ## Examples
 

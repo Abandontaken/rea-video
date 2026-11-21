@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-from .util import ASR_LANGS, LOG, OCR_LANGS, load_env_files, read_json, setup_logging, read_image
+from .util import ASR_LANGS, LOG, OCR_LANGS, load_env_files, read_json, setup_logging, read_image, write_json
 from .i18n import LANGS, T, set_lang
 from .classify import LABELS
 from .vlm import vlm_note
@@ -87,7 +87,7 @@ def cmd_decompose(args) -> int:
     b = decompose(args.video, out, use_vlm=use_vlm, whole_vlm=not args.no_whole, ocr=not args.no_ocr,
                   workers=args.workers, engine=args.engine or pref("engine"), platform_meta=meta, stems=stems,
                   packaging=not args.no_packaging, lang=lang, asr=not args.no_asr, max_shots_vlm=max(1, args.max_vlm_shots),
-                  speakers=not args.no_speakers, survey=not args.no_survey)
+                  speakers=not args.no_speakers, survey=not args.no_survey, moments=not args.no_moments)
     print(json.dumps({"out": str(out), "verdict": b["summary"]["verdict"], "shots": b["summary"]["shots"],
                       "confidence": b["summary"]["confidence"], "vlm": b["summary"]["vlm"],
                       "report": str(out / "report.html")}, ensure_ascii=False, indent=2))
@@ -121,6 +121,57 @@ def cmd_survey(args) -> int:
         res["next"] = T("运行 rea-video decompose（同一个 -o），镜头按这次的切点切分，关键帧和节奏写进报告",
                         "run rea-video decompose (same -o): shots follow these cuts, key frames and rhythm go into the report")
     print(json.dumps(res, ensure_ascii=False, indent=1))
+    return 0
+
+
+def cmd_moments(args) -> int:
+    """Special moments, coarse to fine: the stretches from the words and an overview, then the key frames of each."""
+    import shutil
+
+    from . import moments as mo
+    from .memory import pref
+    from .pipeline import finalize
+
+    out = Path(args.out_dir)
+    b = read_json(out / "breakdown.json")
+    set_lang(b.get("lang", "zh"))
+    if args.redo and (out / "moments").is_dir():
+        shutil.rmtree(out / "moments")
+        b.get("moments", {}).pop("items", None)
+    m = b.setdefault("moments", {})
+    if "hints" not in m:  # a breakdown made with --no-moments: the hints from the words and the voice (no decode)
+        voc = out / "stems" / "vocals.wav"
+        m.update(genre=mo.genre(b), status="pending",
+                 hints=mo.hints((b.get("speech") or {}).get("lines") or [], voc if voc.is_file() else None, None, b["source"]["duration"]))
+    asker = None
+    if args.vlm or (pref("vlm") == "on" and not args.no_vlm):
+        _check_vlm_config()
+        from .vlm import VLMClient, VLMConfig, prompt_lang_note
+
+        from . import gemini
+
+        cfg = VLMConfig.from_env()
+        if cfg is not None:
+            asker = mo.vlm_asker(VLMClient(cfg, out / "vlm_cache"), prompt_lang_note())
+        elif gemini.configured():  # only a Gemini key: Gemini's own API, which watches the clips with sound
+            asker = mo.vlm_asker(gemini.GeminiClient(), prompt_lang_note())
+        else:
+            raise SystemExit("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL，或 GEMINI_API_KEY）")
+    res = mo.run(b, out, asker=asker)
+    if res["status"] == "waiting":
+        res["next"] = T("看 images 里的图，按 tasks 里的说明把答案写进 waiting 里的文件（filled 改成 true），再运行同一条命令",
+                        "look at the images, answer as the task says into the waiting file (set filled to true), then run the same command again")
+        write_json(out / "breakdown.json", b, compact=True)
+        print(json.dumps(res, ensure_ascii=False, indent=1))
+        return 0
+    finalize(b, out)
+    from .moments import summary_line
+
+    print(summary_line(b) or T("没有找到特殊时刻", "No special moments found"))
+    for it in b["moments"].get("items") or []:
+        f = it.get("files") or {}
+        print(f"  {it['id']}: " + " ".join(f[k] for k in ("strip", "slow", "reveal", "clip") if f.get(k)))
+    print(T("报告「特殊时刻」一节和 video/moments.md 已更新", "The report's “Special moments” section and video/moments.md are updated"))
     return 0
 
 
@@ -345,9 +396,27 @@ def cmd_tiles(args) -> int:
     frames = []
     with tempfile.TemporaryDirectory() as tmpd:
         for i, t in enumerate(times):
-            p = extract_frame(args.video, float(t), Path(tmpd) / f"tile_{i:03d}.jpg", width=args.cell)
-            img = read_image(p)
+            focus = getattr(args, "focus", None)
+            if focus:  # a region of the frame, enlarged to the cell width (x0,y0,x1,y1 in 0-1)
+                x0, y0, x1, y1 = (float(v) for v in str(focus).replace("，", ",").split(","))
+                p = extract_frame(args.video, float(t), Path(tmpd) / f"tile_{i:03d}.jpg")
+                img = read_image(p)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    img = img[int(y0 * h):max(int(y0 * h) + 2, int(y1 * h)), int(x0 * w):max(int(x0 * w) + 2, int(x1 * w))]
+                    img = cv2.resize(img, (args.cell, max(2, int(args.cell * img.shape[0] / img.shape[1]))), interpolation=cv2.INTER_CUBIC)
+            else:
+                p = extract_frame(args.video, float(t), Path(tmpd) / f"tile_{i:03d}.jpg", width=args.cell)
+                img = read_image(p)
             if img is not None:
+                if getattr(args, "grid", False):  # tenths of the whole frame, for placing a point (x, y in 0-1, top left 0,0)
+                    h, w = img.shape[:2]
+                    for k in range(1, 10):
+                        x, y = int(w * k / 10), int(h * k / 10)
+                        cv2.line(img, (x, 0), (x, h), (0, 255, 255), 1)
+                        cv2.line(img, (0, y), (w, y), (0, 255, 255), 1)
+                        cv2.putText(img, f".{k}", (x + 2, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+                        cv2.putText(img, f".{k}", (2, y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
                 frames.append(img)
     rows = [frames[i:i + args.cols] for i in range(0, len(frames), args.cols)]
     paths = []
@@ -537,6 +606,14 @@ def cmd_summary(args) -> int:
                          + T("（截图在 packaging/）", " (crops under packaging/)"))
         if pk.get("files"):
             lines.append(f"{T('包装文件', 'Packaging files')}: " + " ".join(pk["files"].values()))
+    from .moments import summary_line
+
+    ml = summary_line(b)
+    if ml:
+        lines += ["", ml, T("（关键帧和片段在 moments/，说明见 video/moments.md）", "(key frames and clips under moments/, see video/moments.md)")]
+    elif (b.get("moments") or {}).get("status") == "pending" and b["moments"].get("genre") in ("magic", "drama"):
+        lines += ["", T("特殊时刻: 还没找（`rea-video moments <目录>`）", "Special moments: not looked for yet (`rea-video moments <dir>`)")
+                  + (T("；这是魔术视频，建议找", "; a magic video: worth doing") if b["moments"].get("genre") == "magic" else "")]
     print("\n".join(lines))
     return 0
 
@@ -727,6 +804,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--no-speakers", action="store_true", help="不区分说话人（装了 rea-video[asr] 才会做：在人声干声上分出谁在什么时候说话，多人时每人输出一条 stems/voice_S1.wav；首次使用下载约 35 MB 模型）")
     d.add_argument("--no-survey", action="store_true", help="开 VLM 时也不做总览 + 局部细看（只用切镜检测器的切点）")
     d.add_argument("--no-stems", action="store_true", help="不做人声/配乐分离（默认会输出 stems/original.wav、vocals.wav、music.wav）")
+    d.add_argument("--no-moments", action="store_true", help="不找特殊时刻（魔术揭秘、反转、高潮、穿帮）；开 VLM 时默认会找，约多 3–5 次调用")
     d.set_defaults(func=cmd_decompose)
 
     st = sub.add_parser("stems", help="只把声音剥离成 原声 / 人声 / 配乐 三条轨")
@@ -794,6 +872,8 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--cols", type=int, default=6)
     t.add_argument("--cell", type=int, default=320)
     t.add_argument("--max", type=int, default=48)
+    t.add_argument("--focus", help="只看画面的一块并放大到 --cell 宽：x0,y0,x1,y1（0-1，整幅画面坐标）；和 --grid 一起用时网格是这一块里的坐标")
+    t.add_argument("--grid", action="store_true", help="每格画 0.1 一条的网格（整幅画面坐标，左上角 0,0），定位用")
     t.add_argument("-o", "--out", default="out/tiles.jpg")
     t.set_defaults(func=cmd_tiles)
 
@@ -857,6 +937,13 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--no-detail", action="store_true", help="只定切点，不逐镜挑关键帧")
     sv.add_argument("--workers", type=int, default=4, help="VLM 并发数")
     sv.set_defaults(func=cmd_survey)
+
+    mm = sub.add_parser("moments", help="找特殊时刻（魔术揭秘、反转、高潮、穿帮）：先通读台词和总览定段落，再逐段放大定关键帧，导出片段和关键帧")
+    mm.add_argument("out_dir", help="decompose 的输出目录")
+    mm.add_argument("--vlm", action="store_true", help="用配置的 VLM 自动回答（约 3–5 次调用）")
+    mm.add_argument("--no-vlm", action="store_true", help="本次不用 VLM（覆盖 prefs 里的 vlm=on）：输出任务，由能看图的 agent 回答")
+    mm.add_argument("--redo", action="store_true", help="丢掉上次的答案重新找")
+    mm.set_defaults(func=cmd_moments)
 
     rv = sub.add_parser("review", help="能看图的 agent 当 VLM：生成逐镜看图任务和答案模板")
     rv.add_argument("out_dir", help="decompose 的输出目录")

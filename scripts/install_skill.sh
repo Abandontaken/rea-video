@@ -82,7 +82,7 @@ fi
 
 # ---- 链接 skill：只链到已经装了的 agent（都没装就链到 ~/.claude/skills） ----
 targets=()
-for home in "$HOME/.claude" "$HOME/.codex" "$HOME/.agents"; do
+for home in "$HOME/.claude" "$HOME/.codex" "$HOME/.agents" "$HOME/.gemini"; do
   [ -d "$home" ] && targets+=("$home/skills")
 done
 [ ${#targets[@]} -eq 0 ] && targets=("$HOME/.claude/skills")
