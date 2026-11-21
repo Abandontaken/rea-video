@@ -763,14 +763,17 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
     set_lang(breakdown.get("lang", "zh"))
     # remember the engine: apply-review / correct / eval call finalize without one and must not reset it.
     # A model the user named (decompose --engine, prefs engine) goes into the remake intent unless it already names one;
-    # until a model is named, the report's remake part asks for one instead of planning for a model nobody picked
+    # with none named, the remake part is planned for the default model
     if engine:
         from .generation import load_intent, save_intent
 
         it = load_intent(out)
         if not it.get("model"):
             save_intent(out, {**it, "model": engine})
-    engine = breakdown["engine"] = engine or breakdown.get("engine") or "seedance2.0"
+    from .generation import DEFAULT_MODEL, load_intent
+    from .memory import pref
+
+    engine = breakdown["engine"] = engine or load_intent(out).get("model") or pref("engine") or DEFAULT_MODEL
     shot_records = breakdown["shots"]
     audio = breakdown.get("audio", {})
     prov = breakdown.get("provenance", {})

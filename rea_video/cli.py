@@ -237,9 +237,10 @@ def cmd_stems(args) -> int:
 
 
 def cmd_probe(args) -> int:
-    from .media import video_info
+    from .media import require_tools, video_info
     from .probe import provenance
 
+    require_tools(("ffprobe",))
     info = video_info(args.video)
     p = provenance(info)
     p.pop("tags", None) if not args.tags else None
@@ -661,9 +662,10 @@ def cmd_plan(args) -> int:
     if args.generate:
         intent["generate"] = args.generate
     if not intent.get("model"):
-        print(T("rea-video: 还没选模型：问用户用哪个，写进 {p} 的 model，或加 --model", "rea-video: no model yet: ask the user, then set model in {p} or pass --model",
-                p=out / "remake" / "intent.yaml"), file=sys.stderr)
-        return 2
+        from .generation import DEFAULT_MODEL
+        from .memory import pref
+
+        intent["model"] = pref("engine") or DEFAULT_MODEL
     pl = Planner()
     live = {k: m for k, m in pl.models.items() if m.get("status") not in ("shutdown", "deprecated")}
     m = next((x for x in live.values() if _norm(x["id"]) == _norm(intent["model"]) or _norm(x.get("name", "")) == _norm(intent["model"])), None)
@@ -797,7 +799,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--lang", choices=LANGS, help="报告、结论和 VLM 描述的语言：zh（默认）/ en；按用户提问的语言选，也可用 prefs lang 设成默认")
     d.add_argument("--workers", type=int, default=3)
     d.add_argument("--max-vlm-shots", type=int, default=60, help="最多发给 VLM 的调用数（默认 60；镜头更多时优先看最拿不准的，其余只靠确定性取证）")
-    d.add_argument("--engine", help="复刻方案按哪个视频模型规划（rea-video models 列出的 id；默认 prefs 里的 engine，否则 seedance2.0）")
+    d.add_argument("--engine", help="复刻方案按哪个视频模型规划（rea-video models 列出的 id；默认 prefs 里的 engine，否则 minimax-h3）")
     d.add_argument("--meta", help='平台元数据 JSON，例如 {"music": {"title": "xx", "author": "yy", "is_original": false, "popular": true}}')
     d.add_argument("--no-asr", action="store_true", help="不做本地语音识别（装了 rea-video[asr] 才会做：在人声干声上识别台词和时间，首次使用下载约 160 MB 模型）")
     d.add_argument("--asr-lang", choices=ASR_LANGS, help="台词的语言：auto（默认，SenseVoice 自动识别中/英/日/韩/粤）、bn 孟加拉语（换用孟加拉语识别模型，首次使用自动下载约 90 MB）；也可用 prefs asr_lang 设成默认")
@@ -1002,8 +1004,8 @@ def main(argv: list[str] | None = None) -> int:
     except MediaError as exc:  # missing ffmpeg / unreadable video: one line, not a traceback
         hint = ""
         if "not found on PATH" in str(exc):
-            hint = T("\n安装 ffmpeg：macOS `brew install ffmpeg`，Ubuntu/Debian `sudo apt install ffmpeg`",
-                     "\ninstall ffmpeg: macOS `brew install ffmpeg`, Ubuntu/Debian `sudo apt install ffmpeg`")
+            hint = T("\n安装 ffmpeg：macOS `brew install ffmpeg`，Ubuntu/Debian `sudo apt install ffmpeg`，Windows `winget install Gyan.FFmpeg`",
+                     "\ninstall ffmpeg: macOS `brew install ffmpeg`, Ubuntu/Debian `sudo apt install ffmpeg`, Windows `winget install Gyan.FFmpeg`")
         print(f"rea-video: {exc}{hint}", file=sys.stderr)
         if args.verbose:
             raise

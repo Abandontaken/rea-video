@@ -21,7 +21,7 @@ from .layers import WORK_W, _boxes_at, _text_boxes, compare, layer_mask, scene_f
 from .media import extract_frame
 from .packaging import fit_ass_sizes, to_ass
 from .plan import code_style
-from .util import read_json, write_json
+from .util import read_image, read_json, write_json
 
 POINT_STYLES = ("particles", "lineart")  # drawn as particles on the sampled points; other styles move the cut-out
 
@@ -90,7 +90,7 @@ def match(out: Path, spec_path: Path, rounds: int = 5) -> list[dict]:
         a, z = e["start"], e["end"]
         t = a + max(0.6 * (z - a), min(z - a, float(e.get("enter_s", 0)) + 0.05))  # past the morph in
         extract_frame(video, t, tmp, WORK_W)
-        ref = cv2.imread(str(tmp))
+        ref = read_image(tmp)
         if ref is None:
             continue
         bx = _boxes_at(boxes, a, z)

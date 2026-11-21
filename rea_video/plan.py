@@ -315,7 +315,7 @@ class Planner:
                         "how": T(how, how_en) + (T("（{n}）", " ({n})", n=" / ".join(names)) if names else "")})
         return out
 
-    def plan_shot(self, label: str, shot: dict, video: dict, engine: str = "seedance2.0") -> dict:
+    def plan_shot(self, label: str, shot: dict, video: dict, engine: str = "minimax-h3") -> dict:
         rule_id, executor, gen_type = LABEL_ROUTE.get(label, ("R14-ambient-broll", "capsule_cinema", "text_to_video"))
         from .dance import move_of
 

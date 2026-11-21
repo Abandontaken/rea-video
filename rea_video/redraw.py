@@ -79,7 +79,7 @@ class Scene:
         self.centre = np.array(sc.get("centre", [0.5, 0.5]), np.float32) * (W, H)
         rng = np.random.default_rng(seed)
         if self.draw == "cutout":
-            img = cv2.imread(str(base / sc["cutout"]), cv2.IMREAD_UNCHANGED)
+            img = cv2.imdecode(np.fromfile(str(base / sc["cutout"]), np.uint8), cv2.IMREAD_UNCHANGED)  # any path, also non-ASCII on Windows
             img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
             a = img[..., 3:4].astype(np.float32) / 255.0
             self.layer = img[..., :3].astype(np.float32) / 255.0 * a  # premultiplied
@@ -241,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     spec = Path(a.spec)
     if a.frame is not None:
         out = Path(a.out or spec.with_name(f"frame_{a.frame:.2f}.png"))
-        cv2.imwrite(str(out), Redraw(spec).frame(a.frame))
+        cv2.imencode(out.suffix or ".png", Redraw(spec).frame(a.frame))[1].tofile(str(out))
     else:
         if not shutil.which("ffmpeg"):
             raise SystemExit("ffmpeg not found")

@@ -79,6 +79,9 @@ def shot_sheet(frames: list[np.ndarray], times: list[float], out: Path, n: int =
     return out
 
 
+_SHEET_BG = (20, 22, 27)  # the report cover's background
+
+
 def storyboard(items: list[tuple[np.ndarray, str, str, float, float]], out: Path, cols: int = 6, cell_w: int = 200) -> Path | None:
     """items: (frame, label, title, start, end)."""
     if not items:
@@ -89,18 +92,18 @@ def storyboard(items: list[tuple[np.ndarray, str, str, float, float]], out: Path
         im = _to_pil(frame)
         im = im.resize((cell_w, int(im.height * cell_w / im.width)))
         bar = 56
-        cell = Image.new("RGB", (cell_w, im.height + bar), (255, 255, 255))
+        cell = Image.new("RGB", (cell_w, im.height + bar), _SHEET_BG)
         cell.paste(im, (0, 0))
         d = ImageDraw.Draw(cell)
         color = LABEL_COLOR.get(label, (80, 80, 80))
         d.rectangle([0, im.height, cell_w, im.height + bar], fill=color)
         d.text((8, im.height + 4), title, fill=(255, 255, 255), font=_fit_font(d, title, 21, cell_w - 14))
         d.text((8, im.height + 33), f"{st:.1f}–{en:.1f}s", fill=(255, 255, 255), font=small)
-        d.line([(cell_w - 1, 0), (cell_w - 1, im.height + bar)], fill=(255, 255, 255), width=2)  # gap between cells
+        d.line([(cell_w - 1, 0), (cell_w - 1, im.height + bar)], fill=_SHEET_BG, width=2)  # gap between cells
         cells.append(cell)
     ch = max(c.height for c in cells)
     rows = (len(cells) + cols - 1) // cols
-    sheet = Image.new("RGB", (cell_w * min(cols, len(cells)), ch * rows), (240, 240, 240))
+    sheet = Image.new("RGB", (cell_w * min(cols, len(cells)), ch * rows), _SHEET_BG)
     for k, c in enumerate(cells):
         sheet.paste(c, ((k % cols) * cell_w, (k // cols) * ch))
     out.parent.mkdir(parents=True, exist_ok=True)

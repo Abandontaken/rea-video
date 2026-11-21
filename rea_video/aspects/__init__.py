@@ -199,12 +199,12 @@ def report_md(b: dict, user: bool = False) -> list[str]:
               T("| 维度 | 项目 | 结论 | 来源 |", "| Aspect | Item | Verdict | Sources |"), "|---|---|---|---|"]
         for a, r in rows:
             L.append(f"| {a.title} | {r['zh']} | {str(r['final']).replace('|', '/')} | {_src(r).replace('|', '/')} |")
-        L += ["", "</details>"]
-    L += ["", T("- 说明：光比、软硬、色温、景别由主体像素测得（有人脸用人脸，没有用画面清晰区域，后者是估算）；平台转码会压暗部，软硬和补光偏保守；"
+        L += ["", T("- 说明：光比、软硬、色温、景别由主体像素测得（有人脸用人脸，没有用画面清晰区域，后者是估算）；平台转码会压暗部，软硬和补光偏保守；"
                 "机位角度、光源种类、眼神光、轮廓光以看图结果为准。测量和看图不一致时两者都列出。",
                 "- Note: lighting ratio, soft / hard, colour temperature and shot size are measured on the subject's pixels (the face when there is one, "
                 "otherwise the in-focus region, which is an estimate); platform transcodes crush the shadows, so hardness and fill read conservative; "
                 "camera angle, light source, catchlight and rim light follow the image readers. Where measurement and readers disagree, both are listed.")]
+        L += ["", "</details>"]
     return L
 
 

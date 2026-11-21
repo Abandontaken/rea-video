@@ -445,13 +445,11 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
 
     if intent.get("error"):
         add("error", T("remake/intent.yaml 读不了：{e}", "remake/intent.yaml cannot be read: {e}", e=intent["error"]))
-    if not intent.get("model"):
-        add("warn", T("还没选模型：问用户用哪个，写进 remake/intent.yaml 的 model", "no model chosen: ask the user and set model in remake/intent.yaml"))
     if intent.get("generate") == "all" and not intent.get("swaps"):
         add("warn", T("整条重做，但意图里没写要换什么（swaps）", "the whole video is remade but the intent lists nothing to swap (swaps)"))
     for s in intent.get("swaps") or []:
         if s.get("image") and not Path(s["image"]).is_file():
-            add("error", T("参考图不存在：{p}", "reference image not found: {p}", p=s["image"]))
+            add("error", T("参考图找不到，请重新提供：{p}", "reference image missing, provide it again: {p}", p=Path(s["image"]).name))
     if spec.get("multi_ref") and not spec.get("images_stated"):
         add("warn", T("能力地图没写这个模型最多几张参考图，按 {n} 张排的；查到实际数后补进模型资料", "the capability map has no image limit for this model; planned for {n}, add the real one", n=UNKNOWN_IMAGES))
     for u in units:
@@ -486,6 +484,9 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
     return out
 
 
+DEFAULT_MODEL = "minimax-h3"  # used until the user names a model or sets a usual one (prefs engine)
+
+
 def check_lines(cs: list[dict]) -> list[str]:
     icon = {"error": "❌", "warn": "⚠️"}
     return [f"- {icon.get(c['level'], '-')} {c['msg']}" for c in cs]
@@ -514,25 +515,28 @@ def report_md(plan: dict, prompts: dict[str, str]) -> list[str]:
                           "the model takes no reference video: one source frame per shot (subtitles erased) fixes composition, swapped-in things get their own images"),
            "frames": T("一次只出一个镜头，从原片首帧（和尾帧）起步", "one shot per call, from the source's first (and last) frame"),
            "text": T("只有文字提示词", "prompt only")}[st]
-    L = [T("- 分组：连着的镜头尽量放进同一次生成，单次 ≤{s:.0f} 秒", "- Grouping: consecutive shots share a call where they fit, ≤{s:.0f}s per call", s=rules.get("max_s") or 0)
+    notes_md = [T("- 分组：连着的镜头尽量放进同一次生成，单次 ≤{s:.0f} 秒", "- Grouping: consecutive shots share a call where they fit, ≤{s:.0f}s per call", s=rules.get("max_s") or 0)
          + (T("、≤{n} 个镜头", ", ≤{n} shots", n=rules["max_shots"]) if rules.get("max_shots") else "")
          + T("；段太长时优先在换场景处切开", "; a long stretch is cut at a scene change first"),
          T("- 输入：{h}", "- Inputs: {h}", h=how)]
     if plan.get("audio_note"):
-        L.append(T("- 声音：{a}", "- Audio: {a}", a=plan["audio_note"]))
+        notes_md.append(T("- 声音：{a}", "- Audio: {a}", a=plan["audio_note"]))
     if plan.get("overlay_note"):
-        L.append(T("- 包装层：{a}", "- Packaging: {a}", a=plan["overlay_note"]))
-    L += ["", T("| 单元 | 镜头 | 时间 | 时长 | 要喂的 | 提示词 |", "| Unit | Shots | Time | Length | Feed | Prompt |"), "|---|---|---|---|---|---|"]
+        notes_md.append(T("- 包装层：{a}", "- Packaging: {a}", a=plan["overlay_note"]))
+    L = [T("| 段 | 镜头 | 时间 | 时长 | 要准备 |", "| Part | Shots | Time | Length | Prepare |"), "|---|---|---|---|---|"]
+    shortest = float(spec.get("min") or 0)
     for u in units:
         when = join(f"{a:.1f}–{z:.1f}s" for a, z in u["ranges"])
-        L.append(f"| {u['id']} | {shot_ids(u['shots'])} | {when} | {u['duration']:.1f}s"
-                 f"{T('（{c} 次）', ' ({c} calls)', c=u['calls']) if u['calls'] > 1 else ''} | {_fed(u) or '—'} | "
-                 f"{T('最终版', 'final') if u['id'] in prompts else T('草稿', 'draft')} |")
+        length = (T("生成 {m:.0f}s，剪到 {d:.1f}s", "generate {m:.0f}s, trim to {d:.1f}s", m=shortest, d=u["duration"])
+                  if u["generate_s"] < shortest else f"{u['duration']:.1f}s")
+        L.append(f"| {u['id']} | {shot_ids(u['shots'])} | {when} | {length}"
+                 f"{T('（{c} 次）', ' ({c} calls)', c=u['calls']) if u['calls'] > 1 else ''} | {_fed(u) or '—'} |")
+    L += ["", '<details class="ref"><summary>' + T("这样分段的原因", "Why it is split this way") + "</summary>", ""] + notes_md + ["", "</details>"]
     for u in units:
-        L += ["", "<details><summary>" + T("{id} · 镜头 {sh} · {d:.1f}s · {m}", "{id} · shots {sh} · {d:.1f}s · {m}",
-                                           id=u["id"], sh=shot_ids(u["shots"]), d=u["duration"], m=strategy_name(u["strategy"])) + "</summary>", "",
-              T("| 输入 | 要不要 | 从哪来 | 为什么 |", "| Input | Needed | From | Why |"), "|---|---|---|---|"]
-        L += [f"| {T(*INPUT_ZH[x['kind']])} | {T(*NEED_ZH[x['need']])} | {x['source']} | {x['why']} |" for x in u["inputs"]]
+        L += ["", "<details><summary>" + T("{id} · 镜头 {sh} · {d:.1f}s", "{id} · shots {sh} · {d:.1f}s",
+                                           id=u["id"], sh=shot_ids(u["shots"]), d=u["duration"]) + "</summary>", "",
+              ]
+        L += [f"- {T(*INPUT_ZH[x['kind']])}{T('：', ': ')}{x['source']}" for x in u["inputs"] if x["need"] != "no" and x["kind"] != "text"]
         for k in ("note",):
             if u.get(k):
                 L += ["", f"- {u[k]}"]
@@ -540,7 +544,7 @@ def report_md(plan: dict, prompts: dict[str, str]) -> list[str]:
             L.append(T("- 表演 #{s}{k}：{l}（{h}，见「表演与情绪」）", "- Acting #{s}{k}: {l} ({h}, see “Acting and emotion”)",
                        s=a["shot"], k=T("（看点）", " (key)") if a["key"] else "", l=a["line"], h=a["how"]))
         final = prompts.get(u["id"])
-        L += ["", T("最终提示词（按 {m} 的写法）：", "Final prompt ({m} format):", m=u.get("model_name") or u.get("model")) if final
+        L += ["", T("提示词：", "Prompt:") if final
               else T("提示词草稿（通用写法，生成前按 {m} 的写法改写进 remake/prompts.json）：", "Draft prompt (generic; rewrite it in {m}'s format into remake/prompts.json before generating):",
                      m=u.get("model_name") or u.get("model")),
               "", "```text", final or u["draft"], "```", "", "</details>"]

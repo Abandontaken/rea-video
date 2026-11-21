@@ -1,4 +1,4 @@
-"""Strip the soundtrack into stems: the original mix, vocals (dry voice / singing) and the rest (BGM + SFX + ambience).
+"""Strip the soundtrack into stems: the original mix, vocals (dry voice / singing) and music.
 
 Backend: UVR MDX-Net "Inst HQ 3" (ONNX, ~67 MB, CPU via onnxruntime). The model predicts the instrumental;
 vocals = mix - instrumental. Weights come from the public UVR model repo on GitHub and are cached in
@@ -158,7 +158,27 @@ def extract_stems(path: str | Path, out_dir: str | Path) -> dict:
         got["effects"] = fx["effects"]
         got["level_db"]["effects"] = fx["level_db"]
         got["effects_model"] = fx["model"]
+        save_wav(_without_effect_hits(inst, fx["effects"]), out / "music.wav")
     return got
+
+
+def _without_effect_hits(inst: np.ndarray, effects_wav: str | Path) -> np.ndarray:
+    """The accompaniment with the effects track taken out only where an effect sounds; the music elsewhere stays as it is."""
+    from .effects import detect
+
+    hits = detect(effects_wav)
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(effects_wav), "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"], capture_output=True)
+    if not hits or r.returncode != 0 or not r.stdout:
+        return inst
+    fx = np.frombuffer(r.stdout, np.float32)
+    n = inst.shape[1]
+    fx = np.pad(fx, (0, max(0, n - len(fx))))[:n]
+    gate = np.zeros(n, np.float32)
+    for e in hits:
+        gate[max(0, int((e["t"] - 0.03) * SR)):min(n, int((e["t"] + e["dur"] + 0.08) * SR))] = 1
+    w = np.hanning(441)
+    gate = np.convolve(gate, w / w.sum(), "same").astype(np.float32)  # 10 ms edges, no clicks
+    return inst - gate * fx
 
 
 SFX_DIR = "sfx"

@@ -53,6 +53,7 @@ You can also hook up a video-capable model (Gemini or Doubao both work) by givin
 
 ## Updates
 
+- **2026-11-21**: Clearer report layout. Remake plans default to MiniMax H3 and follow the model you name.
 - **2026-11-19**: Magic videos: finds the reveal of each trick, frame by frame with a slow-motion clip. Highlights (twists, climaxes, goofs) when you ask for them.
 - **2026-11-17**: Better timing of cuts and moves.
 - **2026-11-15**: Remake plans are made for the model you choose. The report is split into a breakdown part and a remake part.

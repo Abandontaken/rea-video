@@ -145,7 +145,7 @@ def code_motion_md(scenes: list[dict]) -> list[str]:
     return L
 
 
-def model_facts(model_id: str | None) -> str:
+def model_facts(model_id: str | None, source: bool = True) -> str:
     """What the plan was built on, in one line: per-call length, multi-shot, reference inputs, native sound, and where
     the facts come from and when they were checked (a model changes; the reader should see how fresh this is)."""
     m = Planner().models.get(model_id or "")
@@ -164,6 +164,8 @@ def model_facts(model_id: str | None) -> str:
             T("能直接出声", "native sound") if (m.get("audio") or {}).get("native") else ""]
     v = m.get("verified") or {}
     src = T("本地补充的资料", "your own entry") if m.get("local") else T("能力地图", "capability map")
+    if not source:
+        return T("，", ", ").join(x for x in bits if x)
     return T("，", ", ").join(x for x in bits if x) + T("（{src}，核实于 {d}）", " ({src}, checked {d})", src=src, d=v.get("date") or "?")
 
 
@@ -317,7 +319,7 @@ def _light_words(r: dict, light: dict) -> str:
 
 
 # ---------------------------------------------------------------- whole plan
-def production_plan(b: dict, out: Path, engine: str = "seedance2.0") -> dict:
+def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
     """The remake part: generation units (for the model and intent in remake/intent.yaml), motion drive, shooting
     scenes, code builds, local rebuilds, film clips. `engine` is used when the intent names no model."""
     from . import generation as gen_mod

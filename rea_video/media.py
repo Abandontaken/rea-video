@@ -37,8 +37,8 @@ def passthrough_args() -> list[str]:
     return list(_PASSTHROUGH)
 
 
-def require_tools() -> None:
-    for tool in ("ffmpeg", "ffprobe"):
+def require_tools(tools: tuple[str, ...] = ("ffmpeg", "ffprobe")) -> None:
+    for tool in tools:
         if not shutil.which(tool):
             raise MediaError(f"{tool} not found on PATH")
 

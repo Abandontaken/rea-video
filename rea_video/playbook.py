@@ -181,8 +181,8 @@ def _all_generated(b: dict) -> bool:
 
 
 def model_chosen(b: dict) -> bool:
-    """The user named the model the remake is for (remake/intent.yaml); until then nothing model-specific is shown."""
-    return bool((b.get("intent") or {}).get("model"))
+    """The remake part has a model to plan for: the one the user named, their usual one, or the default."""
+    return bool((b.get("intent") or {}).get("model") or (b.get("production_plan") or {}).get("model"))
 
 
 def _material(b: dict, live: bool, refs: bool) -> str | None:
@@ -266,8 +266,8 @@ def _generate(b: dict) -> list[str]:
                   "plans the stretches, inputs and prompts for it (`rea-video plan <folder> --model <model>`)", n=n, s=secs)]
     L = []
     if any(u.get("prompt_missing") for u in units):
-        L.append(T("**补提示词**：这次没开看图，生成单元里的镜头描述是空的；先让 agent 跑 `rea-video review` 看图补写",
-                   "**Fill in the prompts**: this run had no image reading, so the shot descriptions in the units are empty; have the agent run `rea-video review` first"))
+        L.append(T("**补提示词**：这次没开看图，生成单元里的镜头描述是空的；先让 agent 看图补写",
+                   "**Fill in the prompts**: this run had no image reading, so the shot descriptions in the units are empty; have the agent read the shots first"))
     secs = sum(float(u.get("duration") or 0) for u in units)
     chained = any(any(i.get("kind") == "first_frame" and i.get("need") == "yes" and "shot_" not in (i.get("source") or "") for i in u.get("inputs") or [])
                   for u in units)
@@ -294,8 +294,8 @@ def _generate(b: dict) -> list[str]:
     done = plan.get("prompts") or {}
     if done and all(u["id"] in done for u in units):
         errs = [c for c in plan.get("checks") or [] if c["level"] == "error"]
-        L.append(T("**提示词**：已按 {m} 的写法写好（`remake/prompts.json`）", "**Prompts**: written in {m}'s format (`remake/prompts.json`)", m=m)
-                 + (T("，格式检查通过", ", format checks passed") if not errs else T("，格式检查有 {n} 处要改（见「方案检查」）", ", {n} format problems to fix (see “Plan checks”)", n=len(errs))))
+        L.append(T("**提示词**：已按 {m} 的写法写好，在「AI 生成」每段里", "**Prompts**: written in {m}'s format, in each part under “AI generation”", m=m)
+                 + (T("，有 {n} 处要改", ", {n} to fix", n=len(errs)) if errs else ""))
         return L
     L.append(T("**按模型改提示词**：报告里的提示词是通用写法，不同模型的写法不一样（分镜头怎么写、参考图怎么指代、台词怎么写都不同）。"
                "生成前按你实际用的模型的官方提示词指南改一遍，或者让 agent 用这个模型的提示词 skill 优化",
@@ -323,9 +323,9 @@ def _drive(b: dict) -> str | None:
     first = drive[0]
     how = (T("直接拿原片当参考视频（{t}）", "the source clip as the reference video ({t})", t=tool) if first["pick"]["key"] == "ref"
            else T("深度视频驱动（`rea-video drive --depth`）", "a depth-video drive (`rea-video drive --depth`)"))
-    return T("**动作驱动**：{n} 镜（{s:.0f} 秒）的动作用原片当驱动，不用首尾帧生成。`rea-video drive <报告目录>` 擦掉字幕、在停顿处切成约 {k} 段；"
+    return T("**动作驱动**：{n} 镜（{s:.0f} 秒）的动作用原片当驱动，不用首尾帧生成。让 agent 擦掉字幕、在停顿处切成约 {k} 段；"
              "一张角色设定图贯穿每段；这条先用{h}。{w}。新场景和原片差很多时改深度视频，连空间、机位都要换时做白模；每段的路线和提示词见下方「动作驱动」",
-             "**Motion drive**: the moves of {n} shot{p} ({s:.0f} s) are driven from the source, not generated from frames. `rea-video drive <report folder>` "
+             "**Motion drive**: the moves of {n} shot{p} ({s:.0f} s) are driven from the source, not generated from frames. The agent "
              "erases the captions and cuts about {k} segments at calm moments; one character sheet for every segment; start with {h}. {w}. If the new setting "
              "is far from the original, switch to a depth video, and to clay when the space and camera change too; routes and prompts per unit under “Motion drive” below",
              n=n, p="" if n == 1 else "s", s=s, k=k, h=how, w=first["pick"]["why"])
@@ -350,17 +350,17 @@ def _avatar(b: dict) -> str | None:
 def _code(b: dict) -> str | None:
     if not (b.get("production_plan") or {}).get("code"):
         return None
-    return T("**动效画面**：让 agent 跑 `rea-video code-remake` 出一版能改的工程，在它上面换文字和画面，不要从零写；"
+    return T("**动效画面**：让 agent 出一版能改的工程，在它上面换文字和画面，不要从零写；"
              "第一版只是起点，和原片差在哪见「代码合成」",
-             "**Motion graphics**: have the agent run `rea-video code-remake` for an editable first version and change the text and pictures "
+             "**Motion graphics**: have the agent make an editable first version and change the text and pictures "
              "on top of it rather than starting from scratch; the first version is only a start, where it differs from the original is under “Code build”")
 
 
 def _local(b: dict) -> str | None:
     if not (b.get("production_plan") or {}).get("local"):
         return None
-    return T("**静图推拉**：换成自己的图，`rea-video remake` 会按原片的推拉方向和速度自动做出来",
-             "**Stills with moves**: swap in your images; `rea-video remake` moves them the way the original does")
+    return T("**静图推拉**：换成自己的图，agent 会按原片的推拉方向和速度做出来",
+             "**Stills with moves**: swap in your images; the agent moves them the way the original does")
 
 
 def _footage(b: dict) -> str | None:
@@ -470,8 +470,8 @@ def _sfx(b: dict) -> str | None:
 
 
 def _assemble() -> str:
-    return T("**拼回对照**：做好的镜头交给 agent 跑 `rea-video remake`，拼回原时间线（没做的先用原片占位），出一条和原片并排的对比片",
-             "**Put it together and compare**: hand the shots you made to the agent; `rea-video remake` places them on the original timeline, keeps the original where yours are missing, and renders a side-by-side comparison with the original")
+    return T("**拼回对照**：做好的镜头交给 agent 拼回原时间线（没做的先用原片占位），出一条和原片并排的对比片",
+             "**Put it together and compare**: hand the shots you made to the agent; it places them on the original timeline, keeps the original where yours are missing, and renders a side-by-side comparison with the original")
 
 
 # Kinds with their own order. "content" and "material" stand for the per-video steps filled in by steps().

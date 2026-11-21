@@ -25,7 +25,7 @@ import numpy as np
 from .features import DETAIL, halo_blur
 from .i18n import T
 from .media import extract_frame, iter_frames, video_info
-from .util import read_json, write_json
+from .util import read_image, read_json, write_image, write_json
 
 WORK_W = 480  # measuring width; positions are written as 0-1 of the frame, so this only sets precision
 GRID = (16, 9)  # cells of the layout map (x, y)
@@ -334,10 +334,10 @@ def scene_frames(out: Path, every: float = 0.25, n_points: int = 4000, all_shots
                 p = fdir / f"{sid}_{tag}.jpg"
                 extract_frame(video, t, p, full_w)
                 rec["frames"][tag] = f"frames/{p.name}"
-            full = cv2.imread(str(fdir / f"{sid}_mid.jpg"))
+            full = read_image(fdir / f"{sid}_mid.jpg")
             if full is not None:
                 in_scene = _boxes_at(boxes, a, z)
-                cv2.imwrite(str(fdir / f"{sid}_layer.png"), cutout(full, in_scene))
+                write_image(fdir / f"{sid}_layer.png", cutout(full, in_scene))
                 rec["frames"]["layer"] = f"frames/{sid}_layer.png"
                 img = cv2.resize(full, (WORK_W, max(1, round(full.shape[0] * WORK_W / full.shape[1]))), interpolation=cv2.INTER_AREA)
                 rec["measure"] = measure(img, in_scene)
@@ -538,7 +538,7 @@ def compare(ref: str, remake: str, every: float = 0.5, out: Path | None = None, 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
             cells.append(row)
         if cells:
-            cv2.imwrite(str(out / "compare_worst.jpg"), np.vstack(cells), [cv2.IMWRITE_JPEG_QUALITY, 88])
+            write_image(out / "compare_worst.jpg", np.vstack(cells), [cv2.IMWRITE_JPEG_QUALITY, 88])
             res["sheet"] = str(out / "compare_worst.jpg")
         write_json(out / "compare.json", res)
     return res
