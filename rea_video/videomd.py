@@ -162,12 +162,41 @@ def _legend() -> list[str]:
 
 # ------------------------------------------------------------------ per-shot files ---------------------------------
 
-def _shot_file(r: dict) -> str:
+def _beats(r: dict) -> list[dict]:
+    """The shot's key frames as the spec's `beats`: moments worth finding without splitting a long shot."""
+    out = []
+    for k in r.get("keyframes") or []:
+        t = k.get("t")
+        role = k.get("role", "")
+        if t is None or role in ("first", "last") or not r["start"] <= t <= r["end"]:
+            continue
+        out.append({"time": [round(t, 3), round(t, 3)], "what": T(*KEY_ROLE_WORDS.get(role, (role or "画面变化", role or "change")))})
+    return out
+
+
+def _pip_layers(r: dict, stickers: list[dict]) -> list[dict]:
+    """A composite picture, when a picture-in-picture window covers at least half of the shot."""
+    span = max(1e-3, r["end"] - r["start"])
+    pips = [s for s in stickers if s.get("kind") == "pip" and s.get("confidence") != "low" and s.get("bbox")
+            and not s.get("in_picture") and (min(s["t1"], r["end"]) - max(s["t0"], r["start"])) / span >= 0.5]
+    if not pips:
+        return []
+    layers = [{"id": "main", "role": "base", "region": [0, 0, 1, 1]}]
+    for n, s in enumerate(pips, 1):
+        x, y, w, h = (max(0.0, min(1.0, float(v))) for v in s["bbox"])
+        layers.append({"id": f"pip{n}", "role": "pip", "region": [x, y, min(w, round(1 - x, 4)), min(h, round(1 - y, 4))],
+                       **({"seen": _one_line(s["what"], 60)} if s.get("what") else {})})
+    return layers
+
+
+def _shot_file(r: dict, *, scene: int | None = None, stickers: list[dict] | None = None) -> str:
     from .report import _shot_detail_md
 
     base = r["base"]
     probs = sorted(base["probs"].items(), key=lambda kv: -kv[1])
     assets = r.get("assets") or {}
+    beats = _beats(r)
+    layers = _pip_layers(r, stickers or [])
     meta = {
         FORMAT: VERSION, "part": "shot", "shot": r["index"], "time": [round(r["start"], 3), round(r["end"], 3)],
         "camera": (r.get("features") or {}).get("camera", "unknown"),
@@ -176,6 +205,9 @@ def _shot_file(r: dict) -> str:
                      "alternatives": dict([(k, v) for k, v in probs if k != base["label"] and v > 0][:2]),
                      "decided_by": DECIDED_BY.get(base["decided_by"], base["decided_by"]), "real_material": bool((r.get("material") or {}).get("has_real_material"))},
         "flags": [k for k in ("uncertain", "disputed") if base.get(k)] + (["low_confidence"] if base["confidence"] < 0.6 and base["decided_by"] != "user" else []),
+        **({"scene": scene} if scene else {}),
+        **({"beats": beats} if beats else {}),
+        **({"layers": layers} if layers else {}),
         **({"transition_in": _transition_in(r)} if _transition_in(r) else {}),
         **({"keyframes": [[k["t"], k.get("role", "")] for k in r["keyframes"]]} if r.get("keyframes") else {}),
         "frames": {k: v for k, v in (("sheet", assets.get("sheet")), ("first", assets.get("first_frame")), ("last", assets.get("last_frame"))) if v},
@@ -273,7 +305,7 @@ def _has_body(text: str) -> bool:
 
 # ------------------------------------------------------------------ entry (L0 + L1) -----------------------------------
 
-def _card(b: dict) -> dict:
+def _card(b: dict, *, scenes: int = 0, transcript: str | None = None) -> dict:
     s, src = b["summary"], b["source"]
     from . import __version__
 
@@ -287,7 +319,8 @@ def _card(b: dict) -> dict:
     source.update({"duration": src["duration"], "size": f"{src['width']}x{src['height']}", "fps": src["fps"], "aspect": src["aspect_ratio"]})
     return {
         FORMAT: VERSION, "name": slug(Path(src["filename"]).stem), "description": _description(b),
-        "source": source, "shots": len(b["shots"]), "lang": b.get("lang", "zh"),
+        "source": source, "shots": len(b["shots"]), **({"scenes": scenes} if scenes else {}),
+        **({"tracks": {"transcript": transcript}} if transcript else {}), "lang": b.get("lang", "zh"),
         "made_mix": {m["label"]: m["ratio"] for m in s["production_mix"]}, "confidence": s["confidence"],
         "readers": readers, "open_questions": len(entities.open_questions(b)),
         "generator": {"name": "rea-video", "version": __version__},
@@ -302,10 +335,76 @@ def slug(stem: str) -> str:
 
 def _description(b: dict) -> str:
     """What the video is about first, then how it was made: an agent picks a package by this line."""
-    about = _one_line((b.get("whole_video_vlm") or {}).get("summary"), 600)
+    about = _about(b)
     made = join(f"{m['label_zh']} {m['ratio']:.0%}" for m in b["summary"]["production_mix"])
     made = T("制作方式（推断）：{m}", "Made with (inferred): {m}", m=made)
     return _one_line(f"{about} {made}" if about else made, 1000)
+
+
+def _about(b: dict) -> str:
+    """What the video shows or says, from the best source this run has: the whole-video read, the story beats, what
+    the shots show, the opening lines, the file's title. Empty only when none of them says anything."""
+    whole = _one_line((b.get("whole_video_vlm") or {}).get("summary"), 600)
+    if whole:
+        return whole
+    points = [p for st in narrative.beats(b) for p in st.get("points") or []][:3]
+    if points:
+        return _one_line(T("；", "; ").join(points), 600)
+    seen = [d for d in ((r.get("vlm") or r.get("review") or {}).get("description") for r in b.get("shots", [])) if d][:2]
+    if seen:
+        return _one_line(T("；", "; ").join(seen), 400)
+    said = [str(ln.get("text") or "").strip() for ln in ((b.get("speech") or {}).get("lines") or [])[:3]]
+    said = [x for x in said if x]
+    if said:
+        return T("开场台词：「{x}」。", "Opens with: “{x}”.", x=_one_line(" ".join(said), 160))
+    title = re.sub(r"[_\-\s]*\d{6,}[_\-\s\d]*", " ", Path(str((b.get("source") or {}).get("filename") or "")).stem).strip(" _-")
+    return T("《{t}》。", "“{t}”.", t=_one_line(title, 80)) if re.search(r"[^\W\d_]", title) else ""
+
+
+LONG_VIDEO_S = 120.0  # past this, a reader wants the parts of the video before its timeline
+
+
+def _scenes(b: dict) -> list[dict]:
+    """The story beats as the spec's scenes, for a long video. Nothing unless they cover every shot once, in order."""
+    shots = b.get("shots") or []
+    if float((b.get("source") or {}).get("duration") or 0) < LONG_VIDEO_S or len(shots) < 2:
+        return []
+    steps = narrative.beats(b)
+    if len(steps) < 2 or [i for st in steps for i in st["shots"]] != [r["index"] for r in shots]:
+        return []
+    by = {r["index"]: r for r in shots}
+    return [{"n": n, "first": st["shots"][0], "last": st["shots"][-1], "shots": st["shots"],
+             "start": by[st["shots"][0]]["start"], "end": by[st["shots"][-1]]["end"],
+             "story": _one_line(join(x for x in (st.get("role_zh"), (st.get("points") or [""])[0]) if x), 60)}
+            for n, st in enumerate(steps, 1)]
+
+
+def _scenes_md(scenes: list[dict]) -> str:
+    lines = [f"#S{s['n']:02d} {s['start']:.3f}-{s['end']:.3f} | shots {s['first']}-{s['last']}" + (f" | story {s['story']}" if s["story"] else "")
+             for s in scenes]
+    body = "\n".join([T("# 场景", "# Scenes"), "", T("长视频先读这里，再打开对应镜头。", "For a long video, read this first, then open the shots you need."),
+                      "", "```videomd-scenes", *lines, "```"])
+    return _sized({FORMAT: VERSION, "part": "scenes", "scenes": len(scenes)}, body)
+
+
+def _vtt_time(t: float) -> str:
+    ms = int(round(max(0.0, float(t)) * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+def _transcript(b: dict) -> str:
+    """Who says what, when, as WebVTT. Empty when no speech was recognised."""
+    out = ["WEBVTT", ""]
+    for ln in (b.get("speech") or {}).get("lines") or []:
+        text = html.escape(_one_line(ln.get("text"), 500), quote=False) if isinstance(ln, dict) else ""
+        if not text or ln.get("start") is None or ln.get("end") is None or float(ln["end"]) <= float(ln["start"]):
+            continue
+        who = re.sub(r"[<>&\n]", "", str(ln.get("speaker") or "")).strip()
+        out += [f"{_vtt_time(ln['start'])} --> {_vtt_time(ln['end'])}", f"<v {who}>{text}" if who else text, ""]
+    return "\n".join(out) if len(out) > 2 else ""
 
 
 def _sha256(path) -> str | None:
@@ -328,8 +427,8 @@ def _next_steps(b: dict) -> list[str]:
     if not (b.get("analysis") or {}).get("review") and not ((b.get("analysis") or {}).get("vlm") or {}).get("used"):
         L.append(T("没开 VLM：能看图就先复核，`rea-video review <本目录>` → 填 `review_answers.json` → `rea-video apply-review <本目录>`",
                    "No VLM ran: if you can see images, review first: `rea-video review <this dir>` → fill `review_answers.json` → `rea-video apply-review <this dir>`"))
-    L.append(T("复刻：`rea-video remake <本目录>`，能自动做的先做掉，其余原片占位；`remake/status.md` 逐镜写了还要做什么。拿到新镜头写进 `remake/mine.json` 再跑一次",
-               "Remake: `rea-video remake <this dir>` does what can be done automatically and keeps the original elsewhere; `remake/status.md` "
+    L.append(T("复刻：生成、拼接和验收由 Capsule Cinema 负责。`rea-video remake <本目录>` 会交给它，能自动做的先做掉，其余原片占位；`remake/status.md` 逐镜写了还要做什么。拿到新镜头写进 `remake/mine.json` 再跑一次",
+               "Remake: Capsule Cinema does the generation, assembly and checks. `rea-video remake <this dir>` hands over to it, does what can be done automatically and keeps the original elsewhere; `remake/status.md` "
                "says per shot what is left. Add incoming clips to `remake/mine.json` and run it again"))
     if "code_render" in labels:
         L.append(T("代码渲染镜头建议交给 HTML 视频框架（如 HyperFrames）按 `video/rhythm.md` 的节奏和关键帧重做；"
@@ -347,8 +446,8 @@ def _next_steps(b: dict) -> list[str]:
                    "Dance / action shots are not generated from first / last frames: `rea-video drive <this dir>` writes caption-free drive clips cut at calm moments, "
                    "and `--join` puts the generated segments back; routes and prompts under “Motion drive” in `video/remake.md`"))
     if labels & {"ai_video", "cg_3d", "anim_2d", "stop_motion", "avatar"}:
-        L.append(T("AI 类镜头：提示词在 `video/remake.md` 的「生成单元」；要自动生成跑 `rea-video remake-plan` + `remake-run --dry-run`，会计费，先问用户",
-                   "AI shots: prompts are in the generation units of `video/remake.md`; for automatic generation run `rea-video remake-plan` + `remake-run --dry-run` (paid: ask the user first)"))
+        L.append(T("AI 类镜头：提示词在 `video/remake.md` 的「生成单元」；要自动生成用 Capsule Cinema：`scripts/remake_reference.py prepare <本目录>`，再 `run <jobs.json> --dry-run`，会计费，先问用户",
+                   "AI shots: prompts are in the generation units of `video/remake.md`; for automatic generation use Capsule Cinema: `scripts/remake_reference.py prepare <this dir>`, then `run <jobs.json> --dry-run` (paid: ask the user first)"))
     return L
 
 
@@ -407,13 +506,25 @@ def write(b: dict, out: Path) -> Path:
     body = "\n".join([T("# 时间线", "# Timeline"), ""] + _legend() + ["", f"```{BLOCK}"] + lines + ["```"])
     put(f"{DIR}/timeline.md", _sized({FORMAT: VERSION, "part": "timeline", "shots": len(lines)}, body),
         T("时间线：一行一个镜头", "Timeline: one line per shot"), T("想知道某段讲什么、哪镜要复核、某镜怎么做", "what a stretch says, which shots need review, how a shot was made"))
+    scenes = _scenes(b)
+    if scenes:
+        put(f"{DIR}/scenes.md", _scenes_md(scenes), T("场景：长视频的分段", "Scenes: the parts of a long video"),
+            T("长视频先读这里，再打开对应镜头", "read first for a long video, then open the shots you need"))
     for stem, title, when, section in _topics(b):
         text = _plain(section)
         if _has_body(text):
             put(f"{DIR}/{stem}.md", _sized({FORMAT: VERSION, "part": stem}, text), title, when)
+    transcript_rel = None
+    transcript = _transcript(b)
+    if transcript:
+        transcript_rel = f"{DIR}/transcript.vtt"
+        put(transcript_rel, transcript, T("台词轨：谁在什么时候说了什么", "Transcript: who says what, when"),
+            T("引用台词、做字幕和配音", "quoting speech, subtitles and voice-over"))
+    scene_of = {i: s["n"] for s in scenes for i in s["shots"]}
+    stickers = (b.get("packaging") or {}).get("stickers") or []
     shot_tokens = 0
     for r in b["shots"]:
-        text = _shot_file(r)
+        text = _shot_file(r, scene=scene_of.get(r["index"]), stickers=stickers)
         (d / "shots" / f"{_shot_name(r['index'])}.md").write_text(text, encoding="utf-8")
         shot_tokens += tokens(text)
     files.append((f"{DIR}/shots/*.md", T("逐镜细节，token 是每个文件的平均值", "Per-shot detail, tokens per file on average"),
@@ -434,7 +545,8 @@ def write(b: dict, out: Path) -> Path:
         if (out / rel.rstrip("/")).exists():
             files.append((rel, what, when, 0))
     entry = out / ENTRY
-    entry.write_text(_front(_card(b), _overview(b, files)), encoding="utf-8")
+    card = _card(b, scenes=len(scenes), transcript=transcript_rel)
+    entry.write_text(_front(card, _overview(b, files)), encoding="utf-8")
     return entry
 
 

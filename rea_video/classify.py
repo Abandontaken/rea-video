@@ -542,14 +542,17 @@ def fuse(det: dict[str, float], vlm: dict[str, float] | None, family: str, major
     for k in LABELS:
         members.setdefault(group_of(k), []).append(k)
     out: dict[str, float] = {}
+    tools_group, reader_group = max(dg, key=dg.get), max(vg, key=vg.get)
     for g, ks in members.items():
         # the group trusts the tools as much as their favourite member; constraints scale it like its members
         w = DET_WEIGHT[max(ks, key=lambda k: det.get(k, 0.0))]
         cons = sum(sub[k] for k in ks) / (sum(raw[k] for k in ks) or 1e-12)
         gs = _log_pool(dg.get(g, 0.0), vg.get(g, 0.0), w) * cons
-        inner = sum(sub[k] for k in ks) or 1e-12
+        # the tools favoured another group, so their spread inside this one says little: the image reader picks the subtype
+        pick = {k: vlm[k] * mult[k] for k in ks} if g == reader_group != tools_group and any(vlm[k] * mult[k] for k in ks) else sub
+        inner = sum(pick[k] for k in ks) or 1e-12
         for k in ks:
-            out[k] = gs * sub[k] / inner
+            out[k] = gs * pick[k] / inner
     # the answer must be one that some source actually backs (top-2 of the deterministic layer
     # or of the model, or a member of the group either one ranks first), not a compromise nobody voted for
     backed = {k for src in (det, vlm) for k, _ in sorted(src.items(), key=lambda kv: -kv[1])[:2]}

@@ -392,7 +392,7 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
     gen_s = sum(u["duration"] for u in units)
     prompts = gen_mod.load_prompts(out)
     plan["prompts"] = {k: v for k, v in prompts.items() if any(u["id"] == k for u in units)}
-    plan["checks"] = gen_mod.checks(plan, intent, prompts, plan.get("prompting"), gen_s)
+    plan["checks"] = gen_mod.checks(plan, intent, prompts, plan.get("prompting"), gen_s, root=out)
     plan["drive"] = dance.units(b)
     plan["shoot"] = _setups([r for r in shots if r["base"]["label"] not in gen_labels], sig, thr, b)
     code, cur = [], []

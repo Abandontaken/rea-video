@@ -449,8 +449,8 @@ def _next_step(sh: dict, plan: dict | None = None) -> str:
     if lab in GENERATED:
         if unit:
             return T("生成 {u}：用报告「生成单元」{u} 的提示词生成", "generate {u}: use the prompt of generation unit {u} in the report", u=unit["id"]) + tail
-        return T("生成：用报告「生成单元」的提示词在网页上手动生成，或 remake-plan + remake-run（计费，先 --dry-run）",
-                 "generate: paste the report's generation-unit prompt into a video model, or remake-plan + remake-run (paid; --dry-run first)") + tail
+        return T("生成：用报告「生成单元」的提示词在网页上手动生成，或交给 Capsule Cinema 生成（计费，先 --dry-run）",
+                 "generate: paste the report's generation-unit prompt into a video model, or have Capsule Cinema generate it (paid; --dry-run first)") + tail
     if lab == "live_action":
         if scene:
             return T("拍摄 {s}：按报告「拍摄场次」{s} 拍", "shoot {s}: follow shooting scene {s} in the report", s=scene["id"]) + tail

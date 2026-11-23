@@ -35,7 +35,7 @@ if [ -z "$PY" ] || ! py_ok "$PY"; then
   echo "  macOS: brew install python@3.12；Ubuntu: sudo apt install python3.12 python3.12-venv；Windows: winget install Python.Python.3.12；然后 PYTHON_BIN=python3.12 bash $0" >&2
   exit 1
 fi
-echo "使用 $PY（$("$PY" --version 2>&1)）"
+echo "使用 ${PY}（$("$PY" --version 2>&1)）"
 install_failed() {
   echo "✗ 安装失败，见上面的输出。" >&2
   if ! py_known "$PY"; then
@@ -57,27 +57,45 @@ dedupe_cv() {  # 参数：能跑 pip 的命令，如 python -m pip / pipx runpip
   fi
 }
 
-# ---- 安装 CLI：pip -> (系统 Python 不让装时) pipx -> 仓库内 .venv ----
+# 插件目录会随升级、卸载变动：从这里装时 CLI 不引用该目录，skill 也由插件自己提供。
+EDITABLE="-e"
+VENV="$ROOT/.venv"
+PLUGIN_COPY=0
+case "$ROOT" in
+  */plugins/cache/*|*/plugins/marketplaces/*|*/.tmp/marketplaces/*)
+    EDITABLE=""
+    VENV="$HOME/.local/share/rea-video/venv"
+    PLUGIN_COPY=1
+    ;;
+esac
+
+# ---- 安装 CLI：pip -> (系统 Python 不让装时) pipx -> 独立 venv ----
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
-if "$PY" -m pip install -e "$ROOT[ocr]" 2>&1 | tee "$log"; [ "${PIPESTATUS[0]}" -eq 0 ]; then
+if "$PY" -m pip install $EDITABLE "$ROOT[ocr]" 2>&1 | tee "$log"; [ "${PIPESTATUS[0]}" -eq 0 ]; then
   dedupe_cv "$PY" -m pip
 elif grep -qi "externally-managed" "$log"; then
   echo "系统 Python 不允许直接 pip 安装（PEP 668），改用隔离环境。" >&2
   if command -v pipx >/dev/null 2>&1; then
-    pipx install --force --python "$PY" -e "$ROOT[ocr]" || install_failed
+    pipx install --force --python "$PY" $EDITABLE "$ROOT[ocr]" || install_failed
     dedupe_cv pipx runpip rea-video
   else
-    "$PY" -m venv "$ROOT/.venv" || install_failed
-    "$ROOT/.venv/bin/python" -m pip install -e "$ROOT[ocr]" || install_failed
-    dedupe_cv "$ROOT/.venv/bin/python" -m pip
+    mkdir -p "$(dirname "$VENV")"
+    "$PY" -m venv "$VENV" || install_failed
+    "$VENV/bin/python" -m pip install $EDITABLE "$ROOT[ocr]" || install_failed
+    dedupe_cv "$VENV/bin/python" -m pip
     mkdir -p "$HOME/.local/bin"
-    ln -sfn "$ROOT/.venv/bin/rea-video" "$HOME/.local/bin/rea-video"
-    echo "已装到 $ROOT/.venv，命令链接到 ~/.local/bin/rea-video"
+    ln -sfn "$VENV/bin/rea-video" "$HOME/.local/bin/rea-video"
+    echo "已装到 ${VENV}，命令链接到 ~/.local/bin/rea-video"
     case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "⚠ ~/.local/bin 不在 PATH 里，把它加进 shell 配置。" >&2 ;; esac
   fi
 else
   install_failed
+fi
+
+if [ "$PLUGIN_COPY" -eq 1 ]; then
+  echo "done. 试试：rea-video --help"
+  exit 0
 fi
 
 # ---- 链接 skill：只链到已经装了的 agent（都没装就链到 ~/.claude/skills） ----

@@ -4,7 +4,7 @@
 
 ## 能做什么
 
-按拆解结果逐镜生成 AI 镜头，拼回原时间线；`rea-video remake-plan` / `remake-run` 直接对接。
+rea-video 负责拆解和复刻方案，capsule-cinema 负责生成、拼接和验收。`rea-video remake` / `remake-run` / `assemble` 会转交给它。
 
 ## 费用
 
@@ -22,16 +22,18 @@
 
 ## 怎么跑
 
-`remake-plan` 照报告第二部分的方案出任务（一个单元的每次调用一个任务，用 `remake/prompts.json` 里的最终提示词），方案检查有 ❌ 时不出任务；`remake-run` 交给 capsule-cinema 跑完，`remake` 按原片切点拆回各镜头。方案不迁就执行端：capsule-cinema 还没接的模型会在 `remake-run` 时报错，这时把提示词和 `remake/refs/` 里的参考交给用户在模型自己的平台上生成。
+`prepare` 调 `rea-video remake-plan` 照报告第二部分的方案出任务和交接文件 `remake/handoff.json`（一个单元的每次调用一个任务，用 `remake/prompts.json` 里的最终提示词），方案检查有 ❌ 时不出任务；`run` 生成，`assemble` 按原片切点拆回各镜头、拼回并验收结构。方案不迁就执行端：capsule-cinema 还没接的模型会在 `remake-run` 时报错，这时把提示词和 `remake/refs/` 里的参考交给用户在模型自己的平台上生成。
 
 生成要用 capsule-cinema 自己的 Python 环境。`rea-video remake-run` / `capsule-draft` 会自动找 `$CAPSULE_CINEMA_PYTHON` 或 `<capsule-root>/.venv/bin/python`，也可以用 `--python` 指定。
 
 ```bash
 CC=$CAPSULE_CINEMA_ROOT   # capsule-cinema 仓库路径
-rea-video remake-plan out/ref/breakdown.json --capsule-root $CC   # 照报告第二部分的方案出任务
-rea-video remake-run out/ref/remake/jobs.json --dry-run      # 先给用户看任务和费用；--only G2 只跑一个单元
-rea-video remake-run out/ref/remake/jobs.json                # 用户确认后再跑
-rea-video assemble out/ref/breakdown.json out/ref/remake/results.json                   # 拼回原时间线 + compare.mp4
+cd $CC
+python3.12 scripts/remake_reference.py recipes /abs/out/ref                 # 先看有没有合适的配方；有就按配方做，没有再走下面的通用流程
+python3.12 scripts/remake_reference.py prepare /abs/out/ref                 # 出任务和交接文件，不计费
+python3.12 scripts/remake_reference.py run /abs/out/ref/remake/jobs.json --dry-run   # 先给用户看任务；--only G2 只跑一个单元
+python3.12 scripts/remake_reference.py run /abs/out/ref/remake/jobs.json    # 用户确认后再跑（计费）
+python3.12 scripts/remake_reference.py assemble /abs/out/ref                # 拼回原时间线 + compare.mp4 + 结构验收
 rea-video capsule-draft out/ref/breakdown.json --capsule-root $CC --capsule-name xxx [--write-capsule]
 ```
 

@@ -81,9 +81,9 @@ rea-video stems ref.mp4 -o out/ref
 ```bash
 CC=~/code/github/capsule-cinema   # capsule-cinema 仓库；也可以设 CAPSULE_CINEMA_ROOT，或 rea-video prefs capsule_root $CC 设一次，之后不用再带 --capsule-root
 rea-video plan out/ref --model seedance-2.5                                      # 按 remake/intent.yaml 和模型出复刻方案（报告第二部分）并检查
-rea-video remake-plan out/ref/breakdown.json --capsule-root $CC                  # 方案里的生成单元 → 生成任务（检查有错误时不出）
-rea-video remake-run out/ref/remake/jobs.json                                    # 调 capsule-cinema 生成（会计费，可先 --dry-run）
-rea-video assemble out/ref/breakdown.json out/ref/remake/results.json            # 按原时间线拼回 + 对比片；加 --overlays 把字幕和花字叠回换掉的镜头
+rea-video remake-plan out/ref/breakdown.json --capsule-root $CC                  # 方案里的生成单元 → 生成任务和交接文件（检查有错误时不出）
+rea-video remake-run out/ref/remake/jobs.json                                    # 转交 capsule-cinema 生成（会计费，可先 --dry-run）
+rea-video assemble out/ref/breakdown.json out/ref/remake/results.json            # 转交 capsule-cinema 拼回并验收；加 --overlays 把字幕和花字叠回换掉的镜头
 rea-video capsule-draft out/ref/breakdown.json --capsule-root $CC --capsule-name my_remake
 ```
 
@@ -120,8 +120,9 @@ rea-video capsule-draft out/ref/breakdown.json --capsule-root $CC --capsule-name
 | `capsule breakdown.json` | 导出 capsule-cinema 的视频分析 JSON |
 | `models [ID]` | 列出能力地图里的生成模型；带 id 时打印这个模型的提示词写法和关键帧要求（`models keyframes` 是关键帧通用做法）；`~/.rea-video/capabilities/models/*.yaml` 里补充的模型也会列出 |
 | `plan OUT_DIR [--model ID] [--generate ai\|all]` | 按复刻意图 `remake/intent.yaml`（模型、整条重做还是只做 AI 镜头、换什么）出报告第二部分：生成单元、每次喂什么、提示词草稿和方案检查；`remake/prompts.json` 里按模型写好的最终提示词会做格式检查；拆解结果不变 |
-| `remake-plan` / `assemble` | 把方案里的生成单元写成任务、拼回成片 |
-| `remake-run JOBS [--dry-run] [--only G2\|2,5\|shot_002] [--capsule-root]` | 用 capsule-cinema 执行复刻任务（会计费）；有任务没生成出视频时退出码非 0 |
+| `remake-plan` | 把方案里的生成单元写成任务和交接文件 |
+| `remake` / `assemble` | 转交 capsule-cinema 拼回成片并验收 |
+| `remake-run JOBS [--dry-run] [--only G2\|2,5\|shot_002] [--capsule-root]` | 转交 capsule-cinema 执行复刻任务（会计费）；有任务没生成出视频时退出码非 0 |
 | `capsule-draft breakdown.json` | 生成 capsule-cinema 胶囊草稿 |
 
 ## 工作流（设计目标；目前完成到拆解和 AI 镜头复刻）
@@ -153,3 +154,5 @@ Ingest ─► Decompose ─► Video IR ─► Plan ─► Reconstruct ─► Ve
 - **adapt（创意改编）**：保留原片"为什么有效"的关系，比如钩子、揭示、节奏，内容按新主题重写。
 
 两种模式可以按层混用。例如节奏和运镜走 fidelity，人物和文案走 adapt。
+
+`rea-video clean-paths <dir> [--apply]`：清掉旧拆解包里的本机路径，方便分享；默认只报告。生成任务等运行时还要用的路径会保留并列出。

@@ -55,9 +55,14 @@ def _shot_copy(s: dict) -> str:
     return " / ".join(out[:6])
 
 
-def export_capsule_analysis(b: dict, out_path: Path) -> Path:
+def export_capsule_analysis(b: dict, out_path: Path, keep_source_text: bool = False) -> Path:
+    """Analyzer JSON for a capsule draft. A capsule is a reusable recipe, so by default it carries the source's form only:
+    no spoken or on-screen words, scene descriptions, or file path, any of which can name a brand, a person or a licence."""
     s = b["summary"]
-    whole = b.get("whole_video_vlm") or {}
+    whole = dict(b.get("whole_video_vlm") or {})
+    if not keep_source_text:
+        for k in ("segments", "hook", "summary"):
+            whole.pop(k, None)
     shots = b["shots"]
     mix_txt = "、".join(f"{m['label_zh']} {m['ratio']:.0%}" for m in s["production_mix"])
     segments = []
@@ -65,7 +70,7 @@ def export_capsule_analysis(b: dict, out_path: Path) -> Path:
     for sh in shots:
         v = sh.get("vlm") or {}
         f = sh["features"]
-        copy = _shot_copy(sh)
+        copy = _shot_copy(sh) if keep_source_text else ""
         literals += [t for t in copy.split(" / ") if len(t) >= 2]
         motion = CAMERA_ZH.get(f.get("camera", "unknown"), "")
         if sh["base"]["label"] == "still_motion":
@@ -73,7 +78,7 @@ def export_capsule_analysis(b: dict, out_path: Path) -> Path:
         segments.append({
             "start_time": _mmss(sh["start"]), "end_time": _mmss(sh["end"]),
             "beat": f"镜头 {sh['index']}（{sh['duration']:.1f}s）",
-            "visuals": f"[{sh['base']['label_zh']} {sh['base']['confidence']:.0%}] " + (v.get("description") or sh["verdict"]),
+            "visuals": f"[{sh['base']['label_zh']} {sh['base']['confidence']:.0%}] " + ((v.get("description") or sh["verdict"]) if keep_source_text else "按原片的景别和机位重新设计内容"),
             "material": (sh.get("material") or {}).get("origin_zh", ""),
             "motion": motion, "copy": copy,
             "audio": "",
@@ -202,7 +207,7 @@ def export_capsule_analysis(b: dict, out_path: Path) -> Path:
         "content_scope": content_scope,
         "warnings": [] if b["analysis"]["vlm"].get("used") else ["未启用 VLM：镜头描述与文案较少，建议用 --vlm 重新拆解"],
         "rea_video": {"verdict": s["verdict"], "production_mix": s["production_mix"], "confidence": s["confidence"],
-                      "source": b["source"]["path"]},
+                      **({"source": b["source"]["path"]} if keep_source_text else {})},
     }
     write_json(out_path, data)
     return out_path
@@ -219,7 +224,7 @@ def build_remake_jobs(b: dict, bdir: Path, capsule_root: Path) -> Path:
     plan = {**plan, "units": plan.get("units") or []}
     # the intent and the final prompts may have changed since the plan was written: check what will actually be sent
     prompts = load_prompts(bdir)
-    cs = checks(plan, load_intent(bdir), prompts, plan.get("prompting"), sum(u["duration"] for u in plan["units"])) if plan["units"] else []
+    cs = checks(plan, load_intent(bdir), prompts, plan.get("prompting"), sum(u["duration"] for u in plan["units"]), root=bdir) if plan["units"] else []
     errors = [c["msg"] for c in cs if c["level"] == "error"]
     if errors:
         raise ValueError(T("方案检查没过，先改：", "the plan checks failed, fix these first: ") + semi().join(errors))
@@ -241,20 +246,65 @@ def build_remake_jobs(b: dict, bdir: Path, capsule_root: Path) -> Path:
             jobs.append({"shot": sh["index"], "id": sh["id"], "shots": [sh["index"]], "executor": "keep_original", "label": lab,
                          "reason": rep.get("note", ""), "user_assets": rep.get("user_assets", [])})
     jobs.sort(key=lambda j: (j["shot"], j.get("part", 0)))
+    write_handoff(b, bdir, jobs)
     out = bdir / "remake" / "jobs.json"
     write_json(out, {"breakdown": str((bdir / "breakdown.json").resolve()), "capsule_root": str(capsule_root),
                      "run_dir": str(run_dir), "engine": plan.get("model"), "strategy": plan.get("strategy"), "jobs": jobs})
     return out
 
 
-GEN_TYPE = {"remix": "multimodal", "keyframes": "image_to_video", "frames": "first_last_frame", "text": "text_to_video"}
+HANDOFF_SCHEMA = "rea_video.remake_handoff.v1"
+
+
+def write_handoff(b: dict, bdir: Path, jobs: list[dict]) -> Path:
+    """What Capsule Cinema needs to generate, assemble and check the remake, with package-relative paths only. rea-video
+    knows the shots' measured moves, the text to lay back on and what each shot still needs; the doing is Capsule's."""
+    from ..packaging import fit_ass_sizes, to_ass
+    from ..remake import _needs, _next_step, overlay_cues
+
+    src = b["source"]
+    w, h = src["width"], src["height"]
+    if src.get("rotation") in (90, 270):
+        w, h = h, w
+    w, h = w - w % 2, h - h % 2
+    rdir = bdir / "remake"
+    rdir.mkdir(parents=True, exist_ok=True)
+    duration = float(src.get("duration") or (b["shots"][-1]["end"] if b["shots"] else 0))
+    pack = b.get("packaging") or {}  # a cue without text has nothing to lay back on
+    readable = {**b, "packaging": {**pack, "text_cues": [c for c in pack.get("text_cues", []) if c.get("text")]}}
+    cues, stickers = overlay_cues(readable, [(0.0, duration)])
+    ass = None
+    if cues:
+        f = rdir / "overlays_all.ass"
+        f.write_text(to_ass(cues, w, h), encoding="utf-8")
+        try:
+            fit_ass_sizes(f)
+        except (OSError, RuntimeError, ValueError):
+            pass  # the measured sizes stay; only the font-metric correction is lost
+        ass = "remake/overlays_all.ass"
+    plan = b.get("production_plan") or {}
+    executor = {j["shot"]: j["executor"] for j in jobs}
+    shots = [{"index": sh["index"], "start": sh["start"], "end": sh["end"], "label": sh["base"]["label"],
+              "first_frame": (sh.get("assets") or {}).get("first_frame"), "local": (sh.get("replication") or {}).get("local") or {},
+              "executor": executor.get(sh["index"], "keep_original"), "next": _next_step(sh, plan), "needs": _needs(sh)}
+             for sh in b["shots"]]
+    code = bdir / "code" / "remake.mp4"
+    out = rdir / "handoff.json"
+    write_json(out, {"schema": HANDOFF_SCHEMA, "width": w, "height": h, "fps": src["fps"], "duration": duration,
+                     "has_audio": bool(src.get("has_audio")), "shots": shots,
+                     "overlays": {"ass": ass, "stickers": stickers}, "code_video": "code/remake.mp4" if code.is_file() else None})
+    return out
+
+
+GEN_TYPE = {"remix": "multimodal", "keyframes": "multimodal", "frames": "first_last_frame", "text": "text_to_video"}
 
 
 def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str, str]) -> list[dict]:
     """One job per call of each unit, fed as the plan says: the source stretch as reference video (remix), one source
     frame per shot (keyframes), the shot's first / last frame (frames) or nothing but text; the user's images first; the
     final prompt from remake/prompts.json, else the draft. Everything taken from the source has its subtitles erased."""
-    from ..generation import unit_images
+    from ..drive import scene_text
+    from ..generation import redrawn_frame, unit_images
 
     spec = plan.get("spec") or {}
     lo, hi = int(spec.get("min") or 1), int(spec.get("max") or 15)
@@ -283,9 +333,16 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
                 else:
                     params.update(generation_type="image_to_video", image_path=first)
             jid = u["id"] if len(parts) == 1 else f"{u['id']}-{part}"
+            times = [r["t"] for r in u["refs"] if r.get("keyframe") and not redrawn_frame(bdir, f"shot{int(r['keyframe']):03d}")]
+            if u["strategy"] == "frames":
+                times += [t for name, t in ((f"{u['id']}_first", u["start"] + 0.05), (f"{u['id']}_last", u["end"] - 0.08)) if not redrawn_frame(bdir, name)]
+            words = list(dict.fromkeys(w for t in times for w in scene_text(b, t)))
+            warning = T("参考帧里还有画面内文字（{w}），模型可能照着生成：换成干净图，或确认有授权", "the reference frames still show text in the picture ({w}), which the model may copy: use a clean image or confirm you have the rights",
+                        w=join(words[:6])) if words else None
             jobs.append({"shot": u["shots"][0], "id": jid, "unit": u["id"], "part": part, "parts": len(parts), "shots": u["shots"],
                          "executor": "capsule_cinema", "label": u["label"], "strategy": u["strategy"], "images": images,
-                         "params": params, "trim_to": round(secs, 3), "prompt_source": "final" if u["id"] in prompts else "draft"})
+                         "params": params, "trim_to": round(secs, 3), "prompt_source": "final" if u["id"] in prompts else "draft",
+                         **({"warning": warning} if warning else {})})
     return jobs
 
 
@@ -294,12 +351,13 @@ def ref_clips(b: dict, bdir: Path, unit: dict) -> dict[tuple[int, str], str]:
     reference clips ({(part, "@视频1"): path}), per-shot keyframes ({(1, "@图片3"): path}) and the first / last frame of
     a frames unit ({(1, "first"): path, (1, "last"): path}). Files are named by span, so a re-plan never reuses a stale one."""
     from ..drive import clean_clip, clean_frame
+    from ..generation import redrawn_frame
 
     d = bdir / "remake" / "refs"
     out = {}
     for r in unit.get("refs") or []:
         if r.get("keyframe"):
-            f = d / f"{unit['id']}_shot{int(r['keyframe']):03d}_{r['t']:.2f}.jpg"
+            f = redrawn_frame(bdir, f"shot{int(r['keyframe']):03d}") or d / f"{unit['id']}_shot{int(r['keyframe']):03d}_{r['t']:.2f}.jpg"
             if not f.is_file():
                 clean_frame(b, r["t"], f)
             out[(1, r["tag"])] = str(f.resolve())
@@ -314,7 +372,7 @@ def ref_clips(b: dict, bdir: Path, unit: dict) -> dict[tuple[int, str], str]:
         for key, t in (("first", s0 + 0.05), ("last", s1 - 0.08)):
             if key == "last" and not any(x["kind"] == "last_frame" and x["need"] != "no" for x in unit.get("inputs") or []):
                 continue
-            f = d / f"{unit['id']}_{key}_{t:.2f}.jpg"
+            f = redrawn_frame(bdir, f"{unit['id']}_{key}") or d / f"{unit['id']}_{key}_{t:.2f}.jpg"
             if not f.is_file():
                 clean_frame(b, t, f)
             out[(1, key)] = str(f.resolve())

@@ -1,6 +1,7 @@
 {
   "name": "rea-video",
   "owner": { "name": "June" },
+  "metadata": { "description": "拆解一条视频是怎么做出来的，给出复刻方案。" },
   "plugins": [
     {
       "name": "rea-video",

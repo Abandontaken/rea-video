@@ -367,7 +367,13 @@ def _gap_bars(track: FrameTrack, times: list[float], score: np.ndarray, cut_fram
 # ------------------------------------------------------------------ rounds -----------------------------------------
 
 def _source(video: str, info: VideoInfo) -> dict:
-    return {"path": str(video), "duration": round(info.duration, 3), "size": [info.width, info.height], "fps": round(info.fps, 3)}
+    # the file name only: this lands in the package, which gets shared
+    return {"path": Path(str(video)).name, "duration": round(info.duration, 3), "size": [info.width, info.height], "fps": round(info.fps, 3)}
+
+
+def _same_source(a: dict | None, b: dict) -> bool:
+    """Older packages stored the full path: they still count as the same video."""
+    return bool(a) and {**a, "path": Path(str(a.get("path") or "")).name} == b
 
 
 def overview_every(track: FrameTrack, shots: list[Shot], dur: float) -> float:
@@ -784,7 +790,7 @@ def run(video: str | Path, out: Path, track: FrameTrack, shots: list[Shot], info
     src = _source(video, info)
     meta_p = sdir / "survey.json"
     meta = read_json(meta_p) if meta_p.is_file() else {}
-    if meta.get("source") != src or meta.get("version") != VERSION:
+    if not _same_source(meta.get("source"), src) or meta.get("version") != VERSION:
         _reset(sdir)
         meta = {"version": VERSION, "source": src, "rounds": [["overview"]]}
         _write_task(sdir, overview_task(video, info, track, shots, sdir))
@@ -1065,7 +1071,7 @@ def load_timeline(out: Path, video: str | Path, info: VideoInfo) -> dict | None:
         tl = read_json(p)
     except (OSError, ValueError):
         return None
-    return tl if tl.get("source") == _source(str(video), info) and tl.get("version") == VERSION else None
+    return tl if _same_source(tl.get("source"), _source(str(video), info)) and tl.get("version") == VERSION else None
 
 
 # ------------------------------------------------------------------ VLM ------------------------------------------

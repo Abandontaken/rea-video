@@ -24,6 +24,7 @@ def main() -> None:
     ap.add_argument("--capsule-display-name", default="")
     ap.add_argument("--write-capsule", action="store_true")
     ap.add_argument("--overwrite-capsule", action="store_true")
+    ap.add_argument("--keep-source-text", action="store_true")
     args = ap.parse_args()
 
     from rea_video.integrations.capsule_cinema import export_capsule_analysis
@@ -31,7 +32,7 @@ def main() -> None:
 
     bpath = Path(args.breakdown).expanduser().resolve()
     b = read_json(bpath)
-    analysis_path = export_capsule_analysis(b, bpath.with_name("capsule_analysis.json"))
+    analysis_path = export_capsule_analysis(b, bpath.with_name("capsule_analysis.json"), keep_source_text=args.keep_source_text)
     analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
 
     root = Path(args.capsule_root).expanduser().resolve()
@@ -50,6 +51,7 @@ def main() -> None:
         capsule_display_name=args.capsule_display_name,
         write_capsule=args.write_capsule,
         overwrite_capsule=args.overwrite_capsule,
+        output_base_dir=bpath.parent / "capsule_draft",
         tool_factory=lambda _name: ReaVideoAnalyzer(),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))

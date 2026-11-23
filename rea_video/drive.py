@@ -121,6 +121,24 @@ def erase(frame: np.ndarray, mask: np.ndarray | None) -> np.ndarray:
     return out
 
 
+def _strokes(frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """The text's own pixels inside the overlay boxes, so a caption over a face or a body takes only its letters with it.
+    Falls back to the whole box when no letters stand out from their surroundings."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    k = max(15, frame.shape[0] // 40) | 1
+    hit = (cv2.absdiff(gray, cv2.medianBlur(gray, k)) > 32) & (mask > 0)
+    if hit.sum() < 0.02 * (mask > 0).sum():
+        return mask
+    return cv2.dilate(hit.astype(np.uint8) * 255, np.ones((3, 3), np.uint8), iterations=2) & mask
+
+
+def scene_text(b: dict, t: float) -> list[str]:
+    """Words visible at t that are not erased from a reference: lettering on things, which only a clean image can remove."""
+    gone = {tuple(x["bbox"]) for x in overlays(b, persistent=True)}
+    return [str(c["text"]) for c in (b.get("packaging") or {}).get("text_cues") or []
+            if c.get("text") and c.get("bbox") and c["t0"] <= t <= c["t1"] and tuple(c["bbox"]) not in gone]
+
+
 def motion_curve(path: str | Path, info, a: float, z: float, boxes: list[dict]) -> tuple[np.ndarray, np.ndarray]:
     """(times, motion) at CURVE_FPS: mean absolute change from the previous frame, overlay boxes left out."""
     prev, ts, es = None, [], []
@@ -281,7 +299,9 @@ def clean_frame(b: dict, t: float, path: Path, width: int = 1080) -> Path:
     w, _ = scaled_size(info, min(width, info.width or width))
     for f in iter_frames(src, info, w, start=t, duration=0.1):
         path.parent.mkdir(parents=True, exist_ok=True)
-        write_image(path, erase(f, _mask(boxes, t, f.shape[1], f.shape[0]) if boxes else None))
+        m = _mask(boxes, t, f.shape[1], f.shape[0]) if boxes else None
+        # a still is looked at closely: fill at full size, letters only
+        write_image(path, f if m is None else cv2.inpaint(f, _strokes(f, m), 3, cv2.INPAINT_TELEA))
         break
     return path
 

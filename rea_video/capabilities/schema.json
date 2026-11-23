@@ -59,6 +59,7 @@
       }
     },
     "confidence": {"enum": ["high", "medium", "low"]},
+    "planning": {"type": "object", "additionalProperties": false, "description": "How remake plans use this model by default, when that is narrower than its limits", "properties": {"strategy": {"enum": ["remix", "keyframes", "frames", "text"]}, "images": {"type": "integer", "minimum": 1}}},
     "probe_scores": {"type": "object"},
     "notes": {"type": "string"}
   },

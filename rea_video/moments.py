@@ -392,12 +392,13 @@ def _screen_text(b: dict, t0: float = 0.0, t1: float = 1e9, cap: int = 300) -> l
 
 
 def _zoom_cmd(video: str, out: Path) -> str:
-    return (f"rea-video tiles '{video}' --start {{start}} --end {{end}} --every {{every}} --cell 320 [--focus x0,y0,x1,y1 --cell 480] "
-            f"-o '{out / 'moments' / 'look' / 'zoom' / '{name}.jpg'}'")
+    # run from the package directory: `tiles .` finds the video, so the task files carry no local path
+    return ("rea-video tiles . --start {start} --end {end} --every {every} --cell 320 [--focus x0,y0,x1,y1 --cell 480] "
+            "-o 'moments/look/zoom/{name}.jpg'")
 
 
 def _grid_cmd(video: str, out: Path) -> str:
-    return f"rea-video tiles '{video}' --start {{t}} --end {{t_end}} --every 1 --cols 1 --cell 960 --grid -o '{out / 'moments' / 'look' / 'zoom' / 'grid_{{t}}.jpg'}'"
+    return "rea-video tiles . --start {t} --end {t_end} --every 1 --cols 1 --cell 960 --grid -o 'moments/look/zoom/grid_{t}.jpg'"
 
 
 def find_task(b: dict, out: Path, info) -> dict:
@@ -605,7 +606,8 @@ def _answer(out: Path, tid: str) -> dict | None:
 
 def _put(out: Path, task: dict) -> None:
     tp, ap = _paths(out, task["id"])
-    write_json(tp, task)
+    st = task.get("state") or {}
+    write_json(tp, {**task, "state": {**st, "video": Path(st["video"]).name}} if st.get("video") else task)  # no local path on disk
     if not ap.is_file():
         write_json(ap, {**task["answer_template"], "filled": False})
 
@@ -629,6 +631,9 @@ def _task_clips(task: dict, clip_dir: Path) -> list[tuple[Path, str]]:
 
     st = task.get("state") or {}
     video = st.get("video")
+    if video and not Path(video).is_file():  # task files name the video only: the package knows where it is
+        pkg = next((d for d in Path(clip_dir).resolve().parents if (d / "breakdown.json").is_file()), None)
+        video = read_json(pkg / "breakdown.json")["source"]["path"] if pkg else None
     if not video or not Path(video).is_file():
         return []
     clip_dir.mkdir(parents=True, exist_ok=True)

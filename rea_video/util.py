@@ -22,6 +22,8 @@ def write_json(path: Path, data: Any, compact: bool = False) -> Path:
     """compact=True: no indentation (about half the size; for large machine-read files like breakdown.json)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == BREAKDOWN:
+        data = _portable_breakdown(data, path.parent)
     text = (json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=_json_default) if compact
             else json.dumps(data, ensure_ascii=False, indent=2, default=_json_default))
     path.write_text(text + "\n", encoding="utf-8")
@@ -51,7 +53,83 @@ def dumps_rows(data: dict) -> str:
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return _local_breakdown(data, Path(path).parent) if Path(path).name == BREAKDOWN else data
+
+
+# A package gets shared, so breakdown.json must not carry where the video sits on this machine (a home directory names
+# the user). The file keeps the video's name; the local path lives in $REA_VIDEO_HOME/sources.json and comes back on read.
+BREAKDOWN = "breakdown.json"
+
+
+def _sources_file() -> Path:
+    return Path(os.getenv("REA_VIDEO_HOME", str(Path.home() / ".rea-video"))).expanduser() / "sources.json"
+
+
+def _source_key(src: dict) -> str:
+    return str(src.get("sha256_head") or f"{src.get('filename')}:{src.get('duration')}")
+
+
+_SOURCES_SEEN: dict[str, str] = {}  # this process's own videos, found even when the index cannot be written or read
+
+
+def _remember_source(src: dict, path: str) -> None:
+    _SOURCES_SEEN[_source_key(src)] = path
+    f = _sources_file()
+    try:
+        known = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+        if known.get(_source_key(src)) == path:
+            return
+        known[_source_key(src)] = path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f"{f.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(known, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        tmp.replace(f)
+    except (OSError, ValueError) as exc:  # only the convenience of finding the video later is lost
+        LOG.warning("could not remember where the source video is: %s", exc)
+
+
+def _portable_breakdown(data: Any, root: Path) -> Any:
+    """A copy to write: the source path reduced to the file name, paths inside the package made relative."""
+    if not isinstance(data, dict) or not isinstance(data.get("source"), dict):
+        return data
+    src = dict(data["source"])
+    path = str(src.get("path") or "")
+    if path and (Path(path).is_absolute() or Path(path).is_file()):
+        _remember_source(src, str(Path(path).resolve()))
+    if path:
+        src["path"] = src.get("filename") or Path(path).name
+    out = {**data, "source": src}
+    stems = data.get("stems")
+    if isinstance(stems, dict) and Path(str(stems.get("effects") or "")).is_absolute():
+        try:
+            rel = Path(stems["effects"]).resolve().relative_to(Path(root).resolve() / "stems")
+            out["stems"] = {**stems, "effects": str(rel)}
+        except ValueError:
+            out["stems"] = {**stems, "effects": Path(stems["effects"]).name}
+    return out
+
+
+def _local_breakdown(data: Any, root: Path) -> Any:
+    """The source path back as a usable local path: the remembered one, else next to the package."""
+    if not isinstance(data, dict) or not isinstance(data.get("source"), dict):
+        return data
+    src = data["source"]
+    path = str(src.get("path") or "")
+    if not path or Path(path).is_absolute():
+        return data
+    candidates = [Path(_SOURCES_SEEN[_source_key(src)])] if _source_key(src) in _SOURCES_SEEN else []
+    try:
+        f = _sources_file()
+        remembered = json.loads(f.read_text(encoding="utf-8")).get(_source_key(src)) if f.is_file() else None
+        if remembered:
+            candidates.append(Path(remembered))
+    except (OSError, ValueError):
+        pass
+    root = Path(root).resolve()
+    candidates += [root / path, root.parent / path, root.parent / "videos" / path, root.parent.parent / path]
+    found = next((c for c in candidates if c.is_file()), root / path)
+    return {**data, "source": {**src, "path": str(found)}}
 
 
 def _json_default(value: Any) -> Any:

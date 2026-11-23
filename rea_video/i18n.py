@@ -19,6 +19,7 @@ from typing import Iterator
 LANGS = ("zh", "en")
 LANG_NAMES = {"zh": "中文", "en": "English"}
 _lang: contextvars.ContextVar[str] = contextvars.ContextVar("rea_video_lang", default="zh")
+_ui_lang: contextvars.ContextVar[str] = contextvars.ContextVar("rea_video_ui_lang", default="zh")
 
 
 def set_lang(lang: str | None) -> str:
@@ -36,6 +37,23 @@ def lang() -> str:
 def T(zh: str, en: str | None = None, **kw) -> str:
     """Text for the current language; `en` missing falls back to zh. kwargs are applied with str.format."""
     s = en if (en is not None and _lang.get() == "en") else zh
+    return s.format(**kw) if kw else s
+
+
+def set_ui_lang(lang: str | None) -> str:
+    """Language of CLI help and diagnostics. Separate from the report language, so it never changes what is written."""
+    lang = lang if lang in LANGS else "zh"
+    _ui_lang.set(lang)
+    return lang
+
+
+def ui_lang() -> str:
+    return _ui_lang.get()
+
+
+def U(zh: str, en: str, **kw) -> str:
+    """CLI help / diagnostic text for the current CLI language."""
+    s = en if _ui_lang.get() == "en" else zh
     return s.format(**kw) if kw else s
 
 

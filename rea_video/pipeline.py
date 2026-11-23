@@ -947,7 +947,15 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
     overlay_kinds = sorted({l["kind"] for r in shot_records for l in r["layers"]})
     conf = sum(r["base"]["confidence"] * r["duration"] for r in shot_records) / total
     parts = [f"{LABEL_ZH[k]} {v / total:.0%}" for k, v in mix_sorted]
-    verdict = (T("混合制作：", "Mixed production: ") if len(mix) > 1 or overlay_kinds else "") + " + ".join(parts)
+    doubtful = sum(r["duration"] for r in shot_records if r["base"].get("uncertain"))
+    if doubtful / total > 0.5:  # most of the split is unproven: lead with that instead of a share nobody can stand behind
+        sure: dict[str, float] = {}
+        for r in shot_records:
+            if not r["base"].get("uncertain"):
+                sure[r["base"]["label"]] = sure.get(r["base"]["label"], 0.0) + r["duration"]
+        parts = [T("实拍还是 AI 待确认 {r:.0%}", "live action or AI, to confirm {r:.0%}", r=doubtful / total)] \
+            + [f"{LABEL_ZH[k]} {v / total:.0%}" for k, v in sorted(sure.items(), key=lambda kv: -kv[1])]
+    verdict = (T("混合制作：", "Mixed production: ") if len(parts) > 1 or overlay_kinds else "") + " + ".join(parts)
     unsure = sum(r["duration"] for r in shot_records if r["base"]["label"] in ("ai_video", "live_action")
                  and r["base"]["confidence"] < 0.65
                  and (r.get("deterministic") or {}).get("facts", {}).get("transcode_degraded"))
@@ -959,8 +967,7 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
         verdict += T("（其中 {r:.0%} 时长有影视片段线索（黑边版式），可能是影视解说或混剪，需看图确认）",
                      " ({r:.0%} of the duration carries film / TV hints (letterbox layout), possibly a film recap or compilation, to confirm by looking)",
                      r=vctx["film_hint_share"])
-    doubtful = sum(r["duration"] for r in shot_records if r["base"].get("uncertain"))
-    if doubtful / total > 0.3 and not (unsure / total > 0.3 and not any(visual_opinion(r) for r in shot_records)):
+    if 0.3 < doubtful / total <= 0.5 and not (unsure / total > 0.3 and not any(visual_opinion(r) for r in shot_records)):
         verdict += T("（其中 {r:.0%} 时长实拍还是 AI 证据不足，待确认）", " ({r:.0%} of the duration lacks evidence for live action vs AI, to confirm)", r=doubtful / total)
     if overlay_kinds:
         verdict += semi() + T("叠加层：{k}（代码/剪辑软件合成）", "overlays: {k} (composited in code / an editor)", k=join(OVERLAY_KIND_ZH.get(k, k) for k in overlay_kinds))

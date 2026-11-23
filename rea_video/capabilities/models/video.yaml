@@ -13,7 +13,7 @@ models:
     primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.reference_video, video.reference_audio, video.multi_shot, video.extend, video.edit_v2v, video.camera_control, video.native_audio]
     limits:
       duration_s: {max: 30}
-      resolutions: [480p, 720p, 1080p]
+      resolutions: [480p, 720p, 1080p, 4K]
       refs: {image: 30, video: 10, audio: 10}
       # 首帧 / 首尾帧 和 参考图 / 参考视频 / 参考音频 不能放在同一个请求里（多家接口文档一致；即梦 App 的「全能参考」可用 @图片 作为首帧）
       exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference, video.reference_video, video.reference_audio]]
@@ -30,6 +30,7 @@ models:
       note: 实测参考：OiiOii 复刻 50 秒电商视频约 40 元（480p 生成后超分到 1080p）
     license: {commercial: true, note: 以平台条款为准}
     sources:
+      - https://docs.volcengine.com/docs/82379/1520757
       - https://seed.bytedance.com/en/blog/one-take-creation-flexible-referencing-introducing-seedance-2-5
       - https://github.com/hypit-ai/hypit/blob/main/packages/provider-hypihub/README.md
       - https://docs.byteplus.com/docs/en/modelark/seedance-2-5.md
@@ -75,7 +76,7 @@ models:
     primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.reference_video, video.reference_audio, video.multi_shot, video.native_audio, video.edit_v2v]
     limits:
       duration_s: {min: 4, max: 15}
-      resolutions: [720p, 1080p]
+      resolutions: [480p, 720p, 1080p, 4K]
       refs: {image: 9, video: 3, audio: 3}
       ref_video_s: {max: 15}   # 参考视频总长
       # 首帧 / 首尾帧 和 参考素材 不能放在同一个请求里；即梦 App 的「全能参考」可用 @图片 作为首帧
@@ -89,6 +90,7 @@ models:
     cost: {usd_per_s: 0.15, note: "第三方列价约 9.07 美元/分钟"}
     license: {commercial: true, note: 以平台条款为准}
     sources:
+      - https://docs.volcengine.com/docs/82379/1520757
       - https://tech-insider.org/best-ai-video-generator-2026/
       - https://en.wikipedia.org/wiki/Seedance_2.0
       - https://github.com/hypit-ai/hypit
@@ -418,20 +420,24 @@ models:
     release: 2026-07
     status: ga
     access: [api, api-aggregator, open-weights]
-    primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.multi_shot, video.native_audio]
+    primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.reference_video, video.reference_audio, video.multi_shot, video.native_audio]
     limits:
       duration_s: {min: 4, max: 15}
-      resolutions: [768p, 1080p, 2K]
+      resolutions: [768p, 2K]
+      refs: {image: 9, video: 3, audio: 3}
+      ref_video_s: {min: 2, max: 15}
       # 首帧 / 首尾帧 和 参考素材 不能放在同一个请求里
-      exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference]]
+      exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference, video.reference_video, video.reference_audio]]
     audio: {native: true}
+    # 复刻方案默认的排法，不改变上面的模型上限
+    planning: {strategy: keyframes, images: 4}
     strengths:
       - 第三方榜单前三（H3 Max Elo 约 1227），且列价最低
       - 权重开放（H3-Base 可在本地跑 768p）
       - Hypit 与 video-replicate-studio 均已接入
       - 一次可出多个镜头：提示词里按 [Shot N] 加切镜时间点写
     weaknesses:
-      - 企业配套弱；1080p 下时长受限
+      - 企业配套弱
       - 2K 需要托管模块
     cost: {usd_per_s: 0.04, note: "H3 Max 约 2.40 美元/分钟；H3 约 7.80 美元/分钟"}
     license: {commercial: conditional, note: MiniMax H3 Community License}
@@ -441,8 +447,8 @@ models:
       - https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md
       - https://platform.minimax.io/docs/api-reference/video-generation-v2-create
       - https://minimax.io/blog/minimax-h3
-    verified: {date: 2026-10-29, basis: third-party}
-    confidence: medium
+    verified: {date: 2026-11-22, basis: vendor}
+    confidence: high
     notes: 官方博客 2026-07-31 发布；开源权重 2026-08-03，只有 768p 基础版，2K 模块只走 API；同一接口还有 H3 Highspeed、H3 Lite 两档，H3 Max 单独成条
 
   - id: minimax-h3-max

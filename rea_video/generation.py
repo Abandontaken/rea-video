@@ -42,6 +42,7 @@ GEN_LABELS = ("ai_video", "cg_3d", "anim_2d")
 ALL_GEN_LABELS = GEN_LABELS + ("live_action", "stop_motion", "film_footage", "avatar")
 INSERT_LABELS = ("code_render", "screen_capture", "still_motion", "static_hold")
 INTENT_FILE = Path("remake") / "intent.yaml"
+REDRAWN_DIR = Path("remake") / "redrawn"
 PROMPTS_FILE = Path("remake") / "prompts.json"
 
 STRATEGY_ZH = {"remix": ("参考原片改写", "remix of the source"), "keyframes": ("关键帧参考多镜头", "multi-shot from source keyframes"),
@@ -106,20 +107,26 @@ def spec_of(model: dict | None) -> dict:
     d, refs = lim.get("duration_s") or {}, lim.get("refs") or {}
     rv = (lim.get("ref_video_s") or {}).get("max")
     multi_ref = "video.multi_reference" in prim
+    plan = m.get("planning") or {}
     return {"max": float(d.get("max") or 10), "min": float(d.get("min") or 0),
             "multi_shot": "video.multi_shot" in prim, "shots": int(lim.get("shots_per_generation") or 0) or None,
             "ref_video": "video.reference_video" in prim, "ref_videos": int(refs.get("video") or 1),
             "ref_total": float(rv) if rv else REF_CLIP_S * max(1, int(refs.get("video") or 1)),
             "multi_ref": multi_ref, "images": int(refs.get("image") or (UNKNOWN_IMAGES if multi_ref else 0)),
-            "images_stated": bool(refs.get("image")),
+            "images_stated": bool(refs.get("image")), "prefer": plan.get("strategy"), "plan_images": plan.get("images"),
             "first": "video.i2v_first_frame" in prim, "last": "video.i2v_first_last" in prim,
             "exclusive": bool(lim.get("exclusive_inputs")), "native_audio": bool((m.get("audio") or {}).get("native"))}
 
 
+def planned_images(spec: dict) -> int:
+    """Images a plan uses per call: the model's limit, or the narrower default its capability entry sets."""
+    return min(spec["images"], spec.get("plan_images") or spec["images"])
+
+
 def choose_strategy(spec: dict, n_own: int) -> str:
-    if spec["ref_video"]:
+    if spec["ref_video"] and spec.get("prefer") in (None, "remix"):
         return "remix"
-    if spec["multi_shot"] and spec["multi_ref"] and spec["images"] >= n_own + 2:
+    if spec["multi_shot"] and spec["multi_ref"] and planned_images(spec) >= n_own + 2:
         return "keyframes"
     if spec["first"]:
         return "frames"
@@ -303,7 +310,7 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
     elif strategy == "keyframes":
         # image slots left after the user's own: when they run short, the longest shots keep their source frame and the
         # rest get their framing in words (a call kept whole beats a frame for every shot when subjects have no image)
-        room = max(0, spec["images"] - len(refs))
+        room = max(0, planned_images(spec) - len(refs))
         framed = {r["index"] for r in sorted(seg, key=lambda r: -r["duration"])[:room]}
         for r in seg:
             if r["index"] not in framed:
@@ -373,7 +380,7 @@ def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[in
         # a swapped-in subject with no image is held only by its description: every extra call is another chance for it
         # to come out different, so keep calls whole and let some shots go without a source frame
         text_only = any(not s.get("image") for s in intent.get("swaps") or [])
-        max_s, max_shots = spec["max"], (spec["shots"] if text_only else min(x for x in (spec["shots"], spec["images"] - len(own)) if x))
+        max_s, max_shots = spec["max"], (spec["shots"] if text_only else min(x for x in (spec["shots"], planned_images(spec) - len(own)) if x))
     elif strategy == "text" and spec["multi_shot"]:
         max_s, max_shots = spec["max"], spec["shots"]
     else:
@@ -430,12 +437,27 @@ def shots_written(text: str) -> int:
     return max([int(x) for p in SHOT_RES for x in re.findall(p, text)] or [0])
 
 
+def redrawn_frame(out: Path, name: str) -> Path | None:
+    """A source frame the user redrew with the swapped-in subject: remake/redrawn/<name>.png|jpg|webp."""
+    return next((f for ext in ("png", "jpg", "jpeg", "webp") if (f := Path(out) / REDRAWN_DIR / f"{name}.{ext}").is_file()), None)
+
+
+def source_frame_names(u: dict) -> list[str]:
+    """The frames this unit takes from the source, by the name a redrawn version goes under."""
+    names = [f"shot{int(r['keyframe']):03d}" for r in u.get("refs") or [] if r.get("keyframe")]
+    if u.get("strategy") == "frames":
+        names.append(f"{u['id']}_first")
+        if any(x["kind"] == "last_frame" and x["need"] != "no" for x in u.get("inputs") or []):
+            names.append(f"{u['id']}_last")
+    return names
+
+
 def unit_images(u: dict) -> list[dict]:
     """The images one unit sends, in prompt order."""
     return [r for r in u.get("refs") or [] if r["tag"].startswith("@图片")]
 
 
-def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None, gen_seconds: float) -> list[dict]:
+def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None, gen_seconds: float, root: Path | None = None) -> list[dict]:
     """Problems to fix before paying for generation. level "error" blocks `remake-plan`; "warn" is shown."""
     spec, units = plan.get("spec") or {}, plan.get("units") or []
     out: list[dict] = []
@@ -464,6 +486,11 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
         if u["generate_s"] < SHORT_UNIT_S:
             add("warn", T("{u} 只有 {d:.1f} 秒：单独生成不稳，按模型最短时长生成后剪短，或和相邻镜头合到一起",
                           "{u} is only {d:.1f}s: unstable on its own; generate the model's minimum and trim, or join it with a neighbour", u=u["id"], d=u["generate_s"]), u["id"])
+        stale_frames = [x for x in source_frame_names(u) if not (root and redrawn_frame(root, x))] if intent.get("swaps") else []
+        if stale_frames:
+            add("warn", T("{u} 的参考帧还是原片里被替换的主体，模型会在镜头中途变来变去：先照换入的主体重画，存成 remake/redrawn/{f}.png",
+                          "{u}'s reference frames still show the subject being swapped, so the model may morph it mid-shot: redraw them with the new subject as remake/redrawn/{f}.png",
+                          u=u["id"], f="|".join(stale_frames)), u["id"])
         final = prompts.get(u["id"])
         if not final:
             add("warn", T("{u} 还是通用草稿：按 {m} 的写法写好最终提示词，放进 remake/prompts.json", "{u} still has the generic draft: write the final prompt in {m}'s format into remake/prompts.json",
