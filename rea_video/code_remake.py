@@ -33,6 +33,13 @@ def _dot(m: dict, W: int) -> float:
     return round(float(np.clip(np.sqrt(area / np.pi) if area else 1.0, 0.7, 1.4)), 2)
 
 
+def _display_even(src: dict) -> tuple[int, int]:
+    w, h = int(src.get("width") or 960), int(src.get("height") or 540)
+    if src.get("rotation") in (90, 270):
+        w, h = h, w
+    return max(2, w - w % 2), max(2, h - h % 2)
+
+
 def build_spec(out: Path) -> dict:
     """spec.json for the code-rendered scenes of a breakdown, before matching."""
     b = read_json(out / "breakdown.json")
@@ -44,7 +51,7 @@ def build_spec(out: Path) -> dict:
         scene_frames(out, breakdown=b)
     scenes = read_json(fdir / "scenes.json").get("scenes", [])
     shots = {s.get("index"): s for s in b.get("shots", [])}
-    W, H = int(src.get("width") or 960), int(src.get("height") or 540)
+    W, H = _display_even(src)
     spec: dict = {"size": [W, H], "fps": float(src.get("fps") or 25), "duration": float(src.get("duration") or 0),
                   "text": "overlays.ass" if any(not c.get("part_of_picture") for c in (b.get("packaging") or {}).get("text_cues", [])) else None,
                   "bloom": 0.5, "bloom_size": 0.012, "scenes": []}
@@ -127,8 +134,8 @@ def code_remake(out: Path, reset: bool = False, render: bool = True, score: bool
     shutil.copyfile(redraw.__file__, cdir / "render.py")
     cues = [c for c in (b.get("packaging") or {}).get("text_cues", []) if not c.get("part_of_picture")]
     if cues and (reset or not (cdir / "overlays.ass").exists()):
-        src = b.get("source") or {}
-        (cdir / "overlays.ass").write_text(to_ass(cues, int(src.get("width") or 960), int(src.get("height") or 540)), encoding="utf-8")
+        aw, ah = _display_even(b.get("source") or {})
+        (cdir / "overlays.ass").write_text(to_ass(cues, aw, ah), encoding="utf-8")
         fit_ass_sizes(cdir / "overlays.ass")
     if reset or not spec_path.exists():
         spec = build_spec(out)

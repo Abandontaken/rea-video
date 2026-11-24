@@ -161,6 +161,13 @@ def main() -> int:
                 errors.append(f"prompting.yaml:{mid}: 字段 {k} 类型不对")
             elif k not in text_keys | list_keys:
                 errors.append(f"prompting.yaml:{mid}: 未知字段 {k}")
+        if mid in models:
+            m_aud = (models[mid].get("audio") or {}).get("native")
+            dlg = str(n.get("dialogue") or "")
+            if m_aud is True and ("没有音频" in dlg or "没有原生音频" in dlg):
+                errors.append(f"{mid}: models 标了 audio.native=true，但 prompting.yaml 写无原生音频")
+            if m_aud is False and "video.native_audio" in (models[mid].get("primitives") or []):
+                errors.append(f"{mid}: audio.native=false 但 primitives 含 video.native_audio")
     for mid, m in live.items():
         if m.get("category") == "video" and mid not in (notes.get("models") or {}):
             warnings.append(f"{mid}: 还没有提示词写法（prompting.yaml）")

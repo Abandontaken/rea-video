@@ -66,7 +66,7 @@ class Editing(Aspect):
         f_dur = sum(r["duration"] for r in filmed)
         out = {"cuts_per_min": round(max(0, len(shots) - 1) / (total / 60), 1), "avg_shot_s": round(total / max(1, len(shots)), 2),
                "filmed_share": round(f_dur / total, 3), "insert_share": round(1 - f_dur / total, 3)}
-        if not filmed:
+        if not filmed or f_dur <= 0:
             out["lines"] = [T("剪辑：每分钟 {c} 刀，平均镜头 {a}s；没有实拍镜头", "Editing: {c} cuts per minute, {a}s average shot; no live-action shots",
                               c=out["cuts_per_min"], a=out["avg_shot_s"])]
             out["result"] = {}

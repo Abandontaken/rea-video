@@ -1,9 +1,8 @@
-"""OpenAI-compatible multimodal client (Gemini via proxy, Doubao, GPT, Qwen-VL...).
+"""Image / video readers: Gemini through its own API (gemini.py), or a multimodal model's OpenAI-compatible endpoint.
 
-Config (first non-empty wins):
-  REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL
-  VIDEO_ANALYSIS_BASE_URL / VIDEO_ANALYSIS_API_KEY / VIDEO_ANALYSIS_MODEL_NAME   (capsule-cinema)
-  GEMINI3_BASE_URL / GEMINI3_API_KEY / GEMINI3_MODEL_NAME                        (capsule-cinema)
+Config:
+  GEMINI_API_KEY (or GOOGLE_API_KEY), model REA_GEMINI_MODEL
+  REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL   (a model's own endpoint; used when set)
 REA_VLM_MODEL may be a comma-separated fallback list.
 REA_VLM_MEDIA = both | video | frames  (default both: a short clip as data:video/mp4 plus keyframes)
 REA_VLM_VIDEO_PART = image_url | video_url  (how a clip is attached; unset: image_url, switching to video_url by
@@ -44,23 +43,14 @@ class VLMConfig:
 
     @classmethod
     def from_env(cls) -> "VLMConfig | None":
-        """First complete config wins; later configs on the same endpoint and key add their
-        models as fallbacks (capsule-cinema keeps one model in VIDEO_ANALYSIS_* and a list in GEMINI3_*).
-        A malformed value raises ValueError naming the variable: a typo must fail fast here, not
-        silently run the VLM with no media (bad REA_VLM_MEDIA) or crash mid-run (bad timeout)."""
-        cfg: VLMConfig | None = None
-        for prefix, mkey in (("REA_VLM", "REA_VLM_MODEL"), ("VIDEO_ANALYSIS", "VIDEO_ANALYSIS_MODEL_NAME"), ("GEMINI3", "GEMINI3_MODEL_NAME")):
-            base, key = os.getenv(f"{prefix}_BASE_URL", "").rstrip("/"), os.getenv(f"{prefix}_API_KEY", "")
-            models = [m.strip() for m in os.getenv(mkey, "").split(",") if m.strip()]
-            if not (base and key and models):
-                continue
-            if cfg is None:
-                cfg = cls(base_url=base, api_key=key, models=models,
-                          timeout=_timeout_from_env(), media=_media_from_env(),
-                          video_part=_video_part_from_env(), reasoning_effort=_effort_from_env())
-            elif prefix != "REA_VLM" and base == cfg.base_url and key == cfg.api_key:
-                cfg.models += [m for m in models if m not in cfg.models]
-        return cfg
+        """The REA_VLM_* endpoint, or None. A malformed value raises ValueError naming the variable: a typo must fail
+        fast here, not silently run the VLM with no media (bad REA_VLM_MEDIA) or crash mid-run (bad timeout)."""
+        base, key = os.getenv("REA_VLM_BASE_URL", "").rstrip("/"), os.getenv("REA_VLM_API_KEY", "")
+        models = [m.strip() for m in os.getenv("REA_VLM_MODEL", "").split(",") if m.strip()]
+        if not (base and key and models):
+            return None
+        return cls(base_url=base, api_key=key, models=models, timeout=_timeout_from_env(), media=_media_from_env(),
+                   video_part=_video_part_from_env(), reasoning_effort=_effort_from_env())
 
     def describe(self) -> str:
         host = re.sub(r"^https?://", "", self.base_url).split("/")[0].rsplit("@", 1)[-1]  # 去掉 user:pass@
@@ -68,7 +58,7 @@ class VLMConfig:
 
 
 def _timeout_from_env() -> float:
-    var = "REA_VLM_TIMEOUT" if os.getenv("REA_VLM_TIMEOUT") is not None else "VIDEO_ANALYSIS_TIMEOUT_SECONDS"
+    var = "REA_VLM_TIMEOUT"
     raw = os.getenv(var, "180")
     try:
         timeout = float(raw)
@@ -100,10 +90,10 @@ def _effort_from_env() -> str:
     return effort
 
 
-SETUP_HINT = ("建议配置 VLM（任意 OpenAI 兼容的多模态模型，如 Gemini / GPT-4o / 豆包 / Qwen-VL）："
-              "设置 REA_VLM_BASE_URL、REA_VLM_API_KEY、REA_VLM_MODEL（可写多个模型逗号分隔做备选），再加 --vlm 重跑")
-SETUP_HINT_EN = ("configure a VLM (any OpenAI-compatible multimodal model, e.g. Gemini / GPT-4o / Doubao / Qwen-VL): "
-                 "set REA_VLM_BASE_URL, REA_VLM_API_KEY and REA_VLM_MODEL (several models comma-separated as fallbacks), then rerun with --vlm")
+SETUP_HINT = ("建议配置 VLM：设置 GEMINI_API_KEY 直接用 Gemini；用其他多模态模型（GPT-4o、豆包、Qwen-VL 等）时，"
+              "设置 REA_VLM_BASE_URL、REA_VLM_API_KEY、REA_VLM_MODEL。配好后加 --vlm 重跑")
+SETUP_HINT_EN = ("configure a VLM: set GEMINI_API_KEY to use Gemini directly; for another multimodal model (GPT-4o, Doubao, Qwen-VL...), "
+                 "set REA_VLM_BASE_URL, REA_VLM_API_KEY and REA_VLM_MODEL. Then rerun with --vlm")
 
 
 def vlm_note(info: dict, review: dict | None = None) -> str:
@@ -150,15 +140,24 @@ def _data_uri(path: Path, mime: str) -> str:
 
 
 def parse_json(text: str) -> dict:
-    text = text.strip()
+    """The answer object in a model's reply: the last complete top-level one, after any reasoning or example.
+    A reply cut off inside an object is an error, so the call is retried instead of keeping a fragment of it."""
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text or "", flags=re.I).strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
+    dec = json.JSONDecoder()
+    found = None
+    pos = text.find("{")
+    while pos != -1:
+        try:
+            found, end = dec.raw_decode(text, pos)
+            pos = text.find("{", end)
+        except ValueError:
+            if re.match(r"\{\s*\"", text[pos:]):
+                raise ValueError("incomplete JSON object in VLM response") from None
+            pos = text.find("{", pos + 1)  # a stray brace in the prose
+    if found is None:
         raise ValueError("no JSON object in VLM response")
-    out = json.loads(m.group(0))
-    if not isinstance(out, dict):
-        raise ValueError("VLM answer is not a JSON object")
-    return out
+    return found
 
 
 class VLMClient:
@@ -168,6 +167,7 @@ class VLMClient:
 
     def __init__(self, cfg: VLMConfig, cache_dir: Path | None = None):
         self.cfg = cfg
+        self.media = cfg.media
         self.cache_dir = cache_dir
         self.dead_requests = 0
         self.models = list(cfg.models)  # reordered: the last model that answered goes first
@@ -183,6 +183,9 @@ class VLMClient:
     @property
     def gave_up(self) -> bool:
         return self.dead_requests >= self.MAX_DEAD_REQUESTS
+
+    def describe(self) -> str:
+        return self.cfg.describe()
 
     def _post(self, model: str, content: list[dict], max_tokens: int) -> str:
         body = json.dumps({"model": model, "messages": [{"role": "user", "content": content}],
@@ -237,7 +240,9 @@ class VLMClient:
         content = build(part)
         last: Exception | None = None
         refused = False
-        for model in list(self.models):
+        with self._lock:
+            models_snapshot = list(self.models)
+        for model in models_snapshot:
             for attempt in range(2):
                 try:
                     t = time.time()
@@ -580,3 +585,13 @@ def prompt_lang_note() -> str:
         return ("\n\nWrite every free-text value (evidence, description, style, summary, copy, prompts, aspects answers) in English. "
                 "Keep enum values exactly as listed. `image_prompt` and `video_prompt` in English; `video_prompt_en` may repeat it.")
     return ""
+
+
+def make_client(cache_dir: Path | None = None):
+    """The configured image / video reader: the REA_VLM_* endpoint when set, else Gemini's own API, else None."""
+    from . import gemini
+
+    cfg = VLMConfig.from_env()
+    if cfg is not None:
+        return VLMClient(cfg, cache_dir)
+    return gemini.GeminiClient() if gemini.configured() else None

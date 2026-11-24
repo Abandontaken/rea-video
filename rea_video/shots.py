@@ -18,6 +18,12 @@ THUMB_W = 96
 # sides, frames on each side that must stay quiet, and how little the picture may drift back (see _returns)
 JUMP_MIN_CHANGED, JUMP_RATIO, JUMP_QUIET, JUMP_MIN_RETURN = 0.17, 2.5, 2, 0.7
 SHORT_SHOT_S = 0.12  # shortest shot kept between two clean hard cuts (4 frames at 30 fps)
+# jump cuts in low-frame-rate footage (GIFs, frame-dropped reposts): every frame already moves a lot, so a cut does not
+# stand out from its neighbours. What still tells them apart: parts of the picture that were at rest (a bowl, a shoulder)
+# all jump in the same frame, spread over the picture. Measured on labelled footage, this only pays off at low fps.
+LOCKED_MAX_FPS, LOCKED_GRID = 18.0, (10, 14)
+LOCKED_REST, LOCKED_JUMP = 3.0, 10.0  # grey levels: a block "at rest" around the frame, a block that jumps in it
+LOCKED_MIN_REST, LOCKED_BREAK, LOCKED_ROWS, LOCKED_COLS = 0.4, 0.2, 0.45, 0.4
 
 
 @dataclass
@@ -150,6 +156,7 @@ def detect_shots(track: FrameTrack, min_shot_s: float = 0.35, cut_threshold: flo
     #    (a title popping in over a static layout changes only a region -> not a cut)
     chg = track.changed
     chg_base = _local_median(chg, radius)
+    rest_breaks = _rest_breaks(track, radius) if fps <= LOCKED_MAX_FPS else None
     for i in range(1, n):
         s = score[i]
         strong = s > cut_threshold and s > base[i] * 2.5 + 0.06 and chg[i] > 0.25
@@ -159,7 +166,7 @@ def detect_shots(track: FrameTrack, min_shot_s: float = 0.35, cut_threshold: flo
         # frames; a filmed screen whose content changes keeps sensor noise, 0.002-0.03, and is not a cut)
         still_swap = (s > cut_threshold and track.hist_dist[i] > 0.25 and chg[i] > 0.18 and chg_base[i] < 0.01
                       and s > base[i] * 5 + 0.1 and i >= 3 and float(track.pix_diff[i - 3:i].max()) < 1e-3)
-        jump = _jump_cut(track, i)
+        jump = _jump_cut(track, i) or (rest_breaks is not None and _locked_jump(track, rest_breaks, i))
         if strong or relative or still_swap or jump:
             # a muzzle flash / strobe, or the frame where a one- or two-frame flash or glitch ends: the picture
             # is back to what it was, so nothing was cut
@@ -342,6 +349,40 @@ def _jump_cut(track: FrameTrack, i: int) -> bool:
     if float(near.max()) > 0.5 * float(c[i]):
         return False
     return _returns(track.thumbs, i) >= JUMP_MIN_RETURN
+
+
+def _rest_breaks(track: FrameTrack, radius: int) -> np.ndarray:
+    """Per frame: (share of the blocks at rest around it that jump in it, share of blocks at rest, rows hit, columns hit)."""
+    n = track.n
+    if n == 0 or not track.thumbs:
+        return np.zeros((n, 4))
+    h, w = track.thumbs[0].shape[:2]
+    grid = LOCKED_GRID if h >= w else LOCKED_GRID[::-1]
+    B = np.stack([cv2.resize(t, grid, interpolation=cv2.INTER_AREA) for t in track.thumbs]).astype(np.float32)
+    D = np.zeros_like(B)
+    D[1:] = np.abs(B[1:] - B[:-1])
+    out = np.zeros((n, 4))
+    for i in range(1, n):
+        around = [j for j in range(max(1, i - radius), min(n, i + radius + 1)) if j != i]
+        if len(around) < 3:
+            continue
+        rest = np.median(D[around], axis=0) < LOCKED_REST
+        hit = (D[i] > LOCKED_JUMP) & rest
+        if hit.any():
+            out[i] = hit.sum() / rest.sum(), rest.mean(), hit.any(axis=1).mean(), hit.any(axis=0).mean()
+    return out
+
+
+def _locked_jump(track: FrameTrack, breaks: np.ndarray, i: int) -> bool:
+    """A cut inside one take at low fps: resting parts all over the picture jump in this one frame and nowhere near it."""
+    if i < 4 or i + 3 >= track.n or track.changed[i] < JUMP_MIN_CHANGED:
+        return False
+    share, rest, rows, cols = breaks[i]
+    if share < LOCKED_BREAK or rest < LOCKED_MIN_REST or rows < LOCKED_ROWS or cols < LOCKED_COLS:
+        return False
+    near_rows = np.concatenate([breaks[max(0, i - 2):i], breaks[i + 1:i + 3]], axis=0)
+    near = near_rows[near_rows[:, 1] >= LOCKED_MIN_REST, 0]
+    return float(near.max(initial=0.0)) <= 0.5 * share and _returns(track.thumbs, i) >= JUMP_MIN_RETURN
 
 
 def _flash(luma: np.ndarray, start: int, end: int, fps: float) -> float:

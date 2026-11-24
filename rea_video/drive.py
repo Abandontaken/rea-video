@@ -22,6 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .readings import shot_overlay_text
 from . import dance
 from .i18n import T, semi, shot_ids
 from .media import iter_frames, scaled_size, video_info
@@ -72,8 +73,7 @@ def overlays(b: dict, persistent: bool = False) -> list[dict]:
             continue  # a flicker read: printing on a dancer's clothes, caught for a frame or two as it turns past
         mid = (c["t0"] + c["t1"]) / 2
         r = next((r for r in b.get("shots", []) if r["start"] <= mid < r["end"]), None) or {}
-        said = (r.get("vlm") or {}).get("overlay_text")
-        said = said if isinstance(said, list) else (r.get("review") or {}).get("overlay_text")
+        said = shot_overlay_text(r)
         if isinstance(said, list) and not any(_same_words(c.get("text") or "", str(o)) for o in said):
             continue  # a reader listed this shot's post-production words; this one is text in the scene (a phone screen, a sign)
         out.append({"t0": float(c["t0"]), "t1": float(c["t1"]), "bbox": c["bbox"], "what": c.get("kind_zh") or c.get("kind") or "text",

@@ -307,7 +307,8 @@ def reveal_clip(video: str, has_audio: bool, size: tuple[int, int], dur: float, 
 
         # 3. the key frame held, with the key step and the guess
         ff(["-ss", f"{kt:.3f}", "-i", video, "-frames:v", "1", str(T / "k.png")])
-        card = _card(T / "c.png", W, H, labels["hold"].format(t=kt), [key["text"]], ring_px(key.get("at")))
+        hold_lines = [key["text"], *([guess] if guess else [])]
+        card = _card(T / "c.png", W, H, labels["hold"].format(t=kt), hold_lines, ring_px(key.get("at")))
         ff(["-loop", "1", "-t", f"{HOLD}", "-i", str(T / "k.png"), "-i", str(card), "-f", "lavfi", "-t", f"{HOLD}", "-i", "anullsrc=r=44100:cl=stereo",
             "-filter_complex", f"[0:v]{zoom}{norm}[v];[v][1:v]overlay[o]", "-map", "[o]", "-map", "2:a", "-t", f"{HOLD}", *a_out, str(T / "c.mp4")])
         segs.append(T / "c.mp4")

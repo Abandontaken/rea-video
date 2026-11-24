@@ -66,13 +66,16 @@ def ensure_model(force: bool = False) -> Path:
 def _session():
     import onnxruntime as ort
 
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = MODEL_THREADS
+    so.inter_op_num_threads = 1
     try:
-        return ort.InferenceSession(str(ensure_model()), providers=["CPUExecutionProvider"])
+        return ort.InferenceSession(str(ensure_model()), sess_options=so, providers=["CPUExecutionProvider"])
     except Exception as e:  # corrupted cache (e.g. an older interrupted download): fetch again once
         if "protobuf" not in str(e).lower() and "load model" not in str(e).lower():
             raise
         LOG.warning("cached stem model is unreadable (%s); downloading again", str(e)[:120])
-        return ort.InferenceSession(str(ensure_model(force=True)), providers=["CPUExecutionProvider"])
+        return ort.InferenceSession(str(ensure_model(force=True)), sess_options=so, providers=["CPUExecutionProvider"])
 
 
 def load_stereo(path: str | Path) -> np.ndarray | None:
@@ -173,12 +176,25 @@ def _without_effect_hits(inst: np.ndarray, effects_wav: str | Path) -> np.ndarra
     fx = np.frombuffer(r.stdout, np.float32)
     n = inst.shape[1]
     fx = np.pad(fx, (0, max(0, n - len(fx))))[:n]
-    gate = np.zeros(n, np.float32)
-    for e in hits:
-        gate[max(0, int((e["t"] - 0.03) * SR)):min(n, int((e["t"] + e["dur"] + 0.08) * SR))] = 1
-    w = np.hanning(441)
-    gate = np.convolve(gate, w / w.sum(), "same").astype(np.float32)  # 10 ms edges, no clicks
-    return inst - gate * fx
+    spans: list[list[int]] = []
+    for e in sorted(hits, key=lambda e: e["t"]):
+        a, z = max(0, int((e["t"] - 0.03) * SR)), min(n, int((e["t"] + e["dur"] + 0.08) * SR))
+        if z <= a:
+            continue
+        if spans and a <= spans[-1][1]:  # effects that overlap are one stretch, with one gain
+            spans[-1][1] = max(spans[-1][1], z)
+        else:
+            spans.append([a, z])
+    sub = np.zeros_like(inst)
+    w = np.hanning(441).astype(np.float32)
+    w /= w.sum()
+    for a, z in spans:
+        seg = fx[a:z]
+        denom = float(np.dot(seg, seg)) + 1e-8
+        gate = np.convolve(np.ones(z - a, np.float32), w, "same").astype(np.float32) if z - a > len(w) else 1.0  # 10 ms edges
+        for c in range(inst.shape[0]):
+            sub[c, a:z] = float(np.clip(np.dot(inst[c, a:z], seg) / denom, 0.0, 1.5)) * gate * seg
+    return inst - sub
 
 
 SFX_DIR = "sfx"
@@ -199,9 +215,11 @@ def cut_sfx(src: str | Path, sfx: list[dict], out_dir: str | Path, limit: int = 
         src = fx
     if not sfx or not Path(src).is_file():
         return 0
+    picks = [(k, sfx[g["rep"]]) for k, g in enumerate(groups, 1)] if groups is not None else list(enumerate(sfx[:limit], 1))
+    if not picks:
+        return 0
     d.mkdir(parents=True, exist_ok=True)
     n = 0
-    picks = [(k, sfx[g["rep"]]) for k, g in enumerate(groups, 1)] if groups else list(enumerate(sfx[:limit], 1))
     for i, e in picks[:limit]:
         t = float(e.get("t", 0.0))
         a = max(0.0, t - 0.12)  # a little lead-in so the attack is heard

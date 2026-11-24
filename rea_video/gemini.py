@@ -1,6 +1,6 @@
 """Google Gemini as the image / video reader, through its own API (not an OpenAI-compatible gateway).
 
-For users whose only key is a Gemini key: GEMINI_API_KEY (or GOOGLE_API_KEY), model REA_GEMINI_MODEL. Gemini watches
+Set GEMINI_API_KEY (or GOOGLE_API_KEY); the model is REA_GEMINI_MODEL. Gemini watches
 video with its sound, so a clip goes in whole: inline when small, else through the Files API (deleted after the
 answer; an upload that can't be deleted expires on Google's side within 48 hours). Short clips are sampled densely
 (video_metadata.fps), long ones at Gemini's default. Used only when the user asks for a VLM (--vlm): the video leaves
@@ -22,7 +22,7 @@ from .util import LOG
 
 API = "https://generativelanguage.googleapis.com"
 DEFAULT_MODEL = "gemini-3.7-flash"
-INLINE_MAX = 18 * 1024 * 1024  # request bodies over ~20 MB must use the Files API
+INLINE_MAX = 14 * 1024 * 1024  # base64 adds 33%: 14 MB raw -> ~18.7 MB body, under Gemini's 20 MB inline limit
 CLIP_FPS = ((30.0, 10.0), (120.0, 4.0))  # (clips up to s, frames a second); longer: Gemini's default (1)
 
 
@@ -50,6 +50,8 @@ class GeminiError(RuntimeError):
 class GeminiClient:
     """ask_json(prompt, media) like VLMClient; media = [(path, mime)], images and video/mp4 clips."""
     video_ok = True
+
+    media = "both"  # watches the clip with its sound and reads the key frames
 
     def __init__(self, model: str | None = None, key: str | None = None, timeout: float = 600.0):
         self.key = key or api_key()
@@ -85,10 +87,14 @@ class GeminiClient:
                                                            "X-Goog-Upload-Command": "upload, finalize"}, timeout=3600.0)
         info = json.loads(body)["file"]
         waited = 0.0
-        while info.get("state") == "PROCESSING" and waited < max_wait:
-            time.sleep(2.0)
-            waited += 2.0
-            info = json.loads(self._call("GET", f"{API}/v1beta/{info['name']}")[1])
+        try:
+            while info.get("state") == "PROCESSING" and waited < max_wait:
+                time.sleep(2.0)
+                waited += 2.0
+                info = json.loads(self._call("GET", f"{API}/v1beta/{info['name']}")[1])
+        except Exception:
+            self._delete(info.get("name", ""))
+            raise
         if info.get("state") != "ACTIVE":
             self._delete(info.get("name", ""))
             raise GeminiError(f"uploaded file state {info.get('state')}")

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from .readings import shot_description
 from . import entities, narrative, performance
 from .classify import LABEL_ZH
 from .i18n import T, join
@@ -67,17 +68,19 @@ def _sized(meta: dict, body: str) -> str:
 
 
 _RE_DETAILS = re.compile(r'^<details(?: class="ref")?><summary>(.*)</summary>$')
+_RE_INLINE_IMG = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 
 
 def _plain(lines: list[str]) -> str:
     """A report section without the HTML folds: a model reads the whole file it opened."""
     out = []
     for ln in lines:
-        m = _RE_DETAILS.match(ln.strip())
+        s = ln.strip()
+        m = _RE_DETAILS.match(s)
         if m:
             out.append(f"**{html.unescape(m.group(1))}**")
-        elif ln.strip() != "</details>" and not ln.startswith("!["):  # images: paths live in front matter (`frames`) or the map
-            out.append(ln)
+        elif s != "</details>" and not ln.startswith("![") and not (s.startswith("<!--") and s.endswith("-->")):
+            out.append(_RE_INLINE_IMG.sub(r"`\1`", ln))
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
@@ -115,7 +118,7 @@ def timeline_line(r: dict, roles: dict, units: dict) -> str:
     n = roles.get(r["index"]) or {}
     if n.get("role_zh") or n.get("point"):
         f["story"] = _one_line(join(x for x in (n.get("role_zh"), n.get("point")) if x), 48)
-    desc = (r.get("vlm") or r.get("review") or {}).get("description")
+    desc = shot_description(r)
     if desc:
         f["seen"] = _one_line(desc, 60)
     act = performance.of(r)
@@ -221,13 +224,13 @@ def _shot_file(r: dict, *, scene: int | None = None, stickers: list[dict] | None
 def _topics(b: dict) -> list[tuple[str, str, str, list[str]]]:
     """(file stem, title, when to read it, report section lines)."""
     from .moments import videomd as moments_md
-    from .report import _audio_md, _cast_md, _content_md, _remake_md, _visual_md, packaging_md
+    from .report import _audio_md, _cast_md, _content_md, _expand_md_marks, _remake_md, _visual_md, packaging_md
 
     return [
         ("moments", T("特殊时刻", "Special moments"), T("魔术揭秘、反转、高潮、穿帮：时间、关键帧、片段", "reveals, twists, climaxes, goofs: times, key frames, clips"), moments_md(b)),
         ("content", T("内容与结构", "Content and structure"), T("要讲什么、叙事线、结构时间轴、台词", "what it says, the narrative line, structure, the script"), _content_md(b)),
         ("cast", T("角色、场景与道具", "Cast, scenes and props"), T("做角色参考图、写首帧提示词", "reference images for characters, first-frame prompts"), _cast_md(b)),
-        ("sound", T("声音", "Sound"), T("人声、BGM、音效、节拍和来源", "voice, music, sound effects, beats and sources"), _audio_md(b)),
+        ("sound", T("声音", "Sound"), T("人声、BGM、音效、节拍和来源", "voice, music, sound effects, beats and sources"), _expand_md_marks(_audio_md(b), b)),
         ("rhythm", T("节奏与关键帧", "Rhythm and key frames"), T("切点和转场的时间、镜头长度、画面变化曲线、每镜关键帧", "when cuts and transitions happen, shot lengths, the change curve, key frames of each shot"), rhythm_md(b)),
         ("look", T("拍法、打光与剪辑", "Camera, lighting and editing"), T("有实拍镜头时：景别、机位、布光、器材", "for filmed shots: framing, camera, lighting, kit"), _visual_md(b)),
         ("packaging", T("剪辑包装", "Packaging"), T("字幕、花字、贴纸、画中画的时间和样式", "subtitles, styled text, stickers, picture-in-picture: timing and style"), packaging_md(b)),
@@ -344,13 +347,13 @@ def _description(b: dict) -> str:
 def _about(b: dict) -> str:
     """What the video shows or says, from the best source this run has: the whole-video read, the story beats, what
     the shots show, the opening lines, the file's title. Empty only when none of them says anything."""
-    whole = _one_line((b.get("whole_video_vlm") or {}).get("summary"), 600)
+    whole = _one_line((b.get("review_story") or {}).get("summary") or (b.get("whole_video_vlm") or {}).get("summary"), 600)
     if whole:
         return whole
-    points = [p for st in narrative.beats(b) for p in st.get("points") or []][:3]
+    points = list(dict.fromkeys(p for st in narrative.beats(b) for p in st.get("points") or [] if p))[:3]
     if points:
         return _one_line(T("；", "; ").join(points), 600)
-    seen = [d for d in ((r.get("vlm") or r.get("review") or {}).get("description") for r in b.get("shots", [])) if d][:2]
+    seen = [d for d in (shot_description(r) for r in b.get("shots", [])) if d][:2]
     if seen:
         return _one_line(T("；", "; ").join(seen), 400)
     said = [str(ln.get("text") or "").strip() for ln in ((b.get("speech") or {}).get("lines") or [])[:3]]
@@ -454,9 +457,10 @@ def _next_steps(b: dict) -> list[str]:
 def _overview(b: dict, files: list[tuple[str, str, str, int]]) -> str:
     s = b["summary"]
     w = b.get("whole_video_vlm") or {}
+    story_sum = (b.get("review_story") or {}).get("summary") or w.get("summary")
     L = [f"# {b['source']['filename']}", "", T("**结论**（推断）：{v}", "**Verdict** (inferred): {v}", v=s["verdict"])]
-    if w.get("summary"):
-        L.append(T("**讲什么**：{s}", "**What it says**: {s}", s=_one_line(w["summary"], 200)))
+    if story_sum:
+        L.append(T("**讲什么**：{s}", "**What it says**: {s}", s=_one_line(story_sum, 200)))
     steps = narrative.beats(b)
     if steps:
         L.append(T("**叙事线**：", "**Narrative**: ") + " → ".join(
@@ -539,6 +543,7 @@ def write(b: dict, out: Path) -> Path:
             ("stems/", T("人声、配乐、音效分轨", "voice, music and effects stems"), T("听声音、复刻配音配乐", "listening, remaking the sound")),
             ("sfx/", T("每处音效的试听片段", "a clip of each sound effect"), T("找同款音效", "finding matching effects")),
             ("packaging/", T("字幕文件、包装时间轴、贴纸截图", "subtitle files, packaging timeline, sticker frames"), T("复刻字幕和包装", "remaking subtitles and packaging")),
+            ("moments/", T("特殊时刻的关键帧、揭秘图和慢放短片", "key frames, step diagrams and slow-motion clips of special moments"), T("看魔术揭秘和关键瞬间", "checking reveals and key moments")),
             ("frames/", T("画面场景：每场景原尺寸帧、画上去那一层的抠图和采样点、测量值", "picture scenes: full-size frames, the drawn layer cut out and sampled, measurements"),
              T("复刻代码渲染画面", "remaking rendered pictures")),
             ("audio.png", T("声音波形和节拍图", "waveform and beat chart"), T("看节奏", "seeing the rhythm"))):

@@ -4,12 +4,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Iterable
 
 LOG = logging.getLogger("rea_video")
-OCR_LANGS = ("zh", "ja", "ko")  # subtitle/huazi OCR languages; zh is the bundled recognizer, others are in overlay._REC_MODELS
+OCR_LANGS = ("zh", "en", "ja", "ko")  # subtitle/huazi OCR languages; zh is the bundled recognizer, others are in overlay._REC_MODELS
 ASR_LANGS = ("auto", "bn")  # speech recognition: auto is SenseVoice (zh/en/ja/ko/yue, detected per line); bn is speech.BN_MODEL_DIR
 
 
@@ -95,7 +96,7 @@ def _portable_breakdown(data: Any, root: Path) -> Any:
         return data
     src = dict(data["source"])
     path = str(src.get("path") or "")
-    if path and (Path(path).is_absolute() or Path(path).is_file()):
+    if path and Path(path).is_file():
         _remember_source(src, str(Path(path).resolve()))
     if path:
         src["path"] = src.get("filename") or Path(path).name
@@ -212,8 +213,20 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+_ENV_QUOTED = re.compile(r"""((["']).*?\2)\s*(?:#.*)?""")
+
+
+def _env_value(raw: str) -> str:
+    """The value of a KEY=VALUE line, read the way dotenv files usually are: a quoted value ends at its closing
+    quote and a comment after it is dropped; unquoted, a comment starts at a # that follows whitespace, so
+    pa#ss and http://x/#frag stay whole."""
+    quoted = _ENV_QUOTED.fullmatch(raw.strip())
+    value = quoted.group(1) if quoted else re.sub(r"\s#.*", "", raw).strip()
+    return value.strip('"').strip("'")
+
+
 def load_env_files(paths: Iterable[str | Path]) -> list[str]:
-    """Minimal .env loader (KEY=VALUE lines). Existing env vars win. Returns loaded files."""
+    """Minimal .env loader (KEY=VALUE lines, `# comment` after a value allowed). Existing env vars win. Returns loaded files."""
     loaded: list[str] = []
     for raw in paths:
         if not raw:
@@ -229,9 +242,8 @@ def load_env_files(paths: Iterable[str | Path]) -> list[str]:
                 line = line[len("export "):]
             key, _, value = line.partition("=")
             key = key.strip()
-            value = value.strip().strip('"').strip("'")
             if key and key not in os.environ:
-                os.environ[key] = value
+                os.environ[key] = _env_value(value)
         loaded.append(str(p))
     return loaded
 

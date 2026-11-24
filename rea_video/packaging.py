@@ -21,6 +21,7 @@ Everything here is deterministic and best effort: styles and animations are meas
 or the agent's look at the frames still settles fine typography (font family) and odd cases."""
 from __future__ import annotations
 
+from .readings import shot_overlay_text
 from .i18n import LangDict, T, join
 
 import re
@@ -398,7 +399,7 @@ def _blocks(items: list[dict]) -> list[dict]:
         y1 = max(l["bbox"][1] + l["bbox"][3] for l in ls)
         out.append({"t": ls[0]["t"], "text": "/".join(l["text"] for l in ls), "conf": float(np.mean([l["conf"] for l in ls])),
                     "bbox": [x0, y0, x1 - x0, y1 - y0], "line_h": float(np.median([l["bbox"][3] for l in ls])),
-                    "n_lines": len(ls), "angle": float(np.median([l["angle"] for l in ls])),
+                    "n_lines": len(ls), "lines": [l["text"] for l in ls], "angle": float(np.median([l["angle"] for l in ls])),
                     "styles": [l["style"] for l in ls if l.get("style")]})
     return out
 
@@ -529,7 +530,9 @@ def build_cues(items: list[dict], step: float) -> list[dict]:
             "bbox": [round(float(v), 4) for v in (x0, y0, x1 - x0, y1 - y0)],
             "bbox_median": [round(float(v), 4) for v in np.median(boxes, axis=0)],
             "line_h": round(float(np.median([o["line_h"] for o in obs])), 4),
-            "n_lines": int(max(o["n_lines"] for o in obs)), "angle": round(float(np.median([o["angle"] for o in obs])), 1),
+            "n_lines": int(max(o["n_lines"] for o in obs)),
+            "lines": next((o["lines"] for o in obs if o["text"] == c["text"]), c["text"].split("/")),
+            "angle": round(float(np.median([o["angle"] for o in obs])), 1),
             "drift": round(float(np.ptp(centers, axis=0).max()), 4) if len(obs) > 1 else 0.0,
             "samples": len(obs), "reveal": bool(c.get("reveal")),
             "style_obs": styles, "first_style_multicolor": bool(obs[0]["styles"] and any(s.get("multicolor") for s in obs[0]["styles"])),
@@ -1201,7 +1204,7 @@ def visual_events(cues: list[dict], stickers: list[dict], cuts: list[float]) -> 
     for c in cues:
         if c["kind"] == "scene":
             continue
-        what = T("{k}「{t}」出现", "{k} \"{t}\" appears", k=c['kind_zh'], t=c['text'].replace('/', ' ')[:16])
+        what = T("{k}「{t}」出现", "{k} \"{t}\" appears", k=c['kind_zh'], t=" ".join(cue_rows(c))[:16])
         ev.append({"t": c["t0"], "type": f"{c['kind']}_in", "what": what, "ref": c["id"]})
         if c.get("mid_motion"):
             ev.append({"t": None, "type": "mid", "ref": c["id"]})
@@ -1410,7 +1413,7 @@ def anchor_text(a: dict) -> str:
 
 def layer_name(e: dict) -> str:
     if e.get("text"):
-        return T("{k}「{t}」", "{k} \"{t}\"", k=e.get("kind_zh", ""), t=e["text"].replace("/", " ")[:14])
+        return T("{k}「{t}」", "{k} \"{t}\"", k=e.get("kind_zh", ""), t=" ".join(cue_rows(e))[:14])
     return str(e.get("what") or e.get("kind_zh") or T("贴纸", "sticker"))[:24]
 
 
@@ -1504,9 +1507,14 @@ def _ts(t: float, sep: str = ",") -> str:
     return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
 
 
+def cue_rows(c: dict) -> list[str]:
+    """The lines of a cue as OCR read them, so a "/" inside a line (24/7, 2026/11/23, km/h) stays part of it."""
+    return c.get("lines") or c["text"].split("/")
+
+
 def to_srt(cues: list[dict], kinds=("subtitle",)) -> str:
     rows = [c for c in sorted(cues, key=lambda c: c["t0"]) if c["kind"] in kinds]
-    return "\n".join(f"{i}\n{_ts(c['t0'])} --> {_ts(c['t1'])}\n{c['text'].replace('/', chr(10))}\n" for i, c in enumerate(rows, 1))
+    return "\n".join(f"{i}\n{_ts(c['t0'])} --> {_ts(c['t1'])}\n{chr(10).join(cue_rows(c))}\n" for i, c in enumerate(rows, 1))
 
 
 def _ass_color(hexrgb: str | None, default: str) -> str:
@@ -1569,9 +1577,9 @@ def _box_overlap(a: list, b: list, of: str = "smaller") -> float:
 
 def _within(a: dict, b: dict) -> bool:
     """Every line of a's text is also in b's (OCR reads one block of text as a whole and again line by line)."""
-    lines = [_norm(r) for r in a["text"].split("/") if _norm(r)]
+    lines = [_norm(r) for r in cue_rows(a) if _norm(r)]
     whole = _norm(b["text"])
-    theirs = [_norm(r) for r in b["text"].split("/") if _norm(r)]
+    theirs = [_norm(r) for r in cue_rows(b) if _norm(r)]
     return bool(lines) and all(ln in whole or any(SequenceMatcher(None, ln, x).ratio() >= 0.8 for x in theirs) for ln in lines)
 
 
@@ -1583,7 +1591,7 @@ def settle_cues(cues: list[dict], min_s: float = 0.15) -> list[dict]:
     one ends where the later one starts (only when the two boxes cover the same place: a block read as one tall box
     must not cut short the single lines beside it)."""
     def size(c: dict) -> tuple:
-        return (len([r for r in c["text"].split("/") if _norm(r)]), len(_norm(c["text"])), c["t1"] - c["t0"])
+        return (len([r for r in cue_rows(c) if _norm(r)]), len(_norm(c["text"])), c["t1"] - c["t0"])
 
     order = {id(c): i for i, c in enumerate(cues)}
     kept: list[dict] = []
@@ -1618,7 +1626,7 @@ def to_ass(cues: list[dict], width: int, height: int) -> str:
     for c in settle_cues([c for c in cues if c["kind"] != "scene" and c.get("bbox")]):
         st = c.get("style") or {}
         x, y, w, h = c["bbox"]
-        rows = c["text"].split("/")
+        rows = cue_rows(c)
         # a narrow tall box is a vertical column of characters; otherwise the text must fit the measured box width
         vertical = len(rows) == 1 and len(_norm(rows[0])) > 1 and h * height > 2 * w * width
         size = c["line_h"] * height * 0.95
@@ -1641,8 +1649,8 @@ def to_ass(cues: list[dict], width: int, height: int) -> str:
         elif ak == "fade" or (c.get("anim_out") or {}).get("kind") == "fade_out":
             tags += "\\fad(200,200)"
         # OCR text is literal: "{...}" would be read as override tags and "\\" as an escape
-        text = c["text"].replace("\\", "＼").replace("{", "｛").replace("}", "｝")
-        text = "\\N".join(text) if vertical else text.replace("/", "\\N")
+        text = "\n".join(rows).replace("\r\n", "\n").replace("\r", "\n").replace("\\", "＼").replace("{", "｛").replace("}", "｝")
+        text = "\\N".join(text.replace("\n", "")) if vertical else text.replace("\n", "\\N")
         events.append(f"Dialogue: {0 if c['kind'] == 'subtitle' else 1},{_ts(c['t0'], '.')[1:-1]},{_ts(c['t1'], '.')[1:-1]},{name},,0,0,0,,{{{tags}}}{text}")
     return "\n".join(head + list(styles.values()) + ["", "[Events]",
                      "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"] + events) + "\n"
@@ -1702,7 +1710,7 @@ def summary_lines(pack: dict, sfx_align: dict | None = None) -> list[str]:
     for kind in ("huazi", "title", "label", "counter"):
         cs = [c for c in cues if c["kind"] == kind]
         if cs:
-            names = join(T("「{t}」", "\"{t}\"", t=c['text'].replace('/', ' ')[:14]) for c in cs[:6]) + (T("等", " …") if len(cs) > 6 else "")
+            names = join(T("「{t}」", "\"{t}\"", t=" ".join(cue_rows(c))[:14]) for c in cs[:6]) + (T("等", " …") if len(cs) > 6 else "")
             extra = ""
             if kind == "huazi":
                 extra = T("（{d}）", " ({d})", d=join(dict.fromkeys(w for c in cs for w in c.get("decor", []))))
@@ -1900,8 +1908,7 @@ def finalize_pack(breakdown: dict, out: Path) -> dict | None:
         # on a rendered / recorded picture, words are the picture's content, not a separate overlay
         c["part_of_picture"] = bool(r and labels[r["id"]] in ("code_render", "screen_capture") and c["kind"] not in ("subtitle",))
         # an image reader listed this shot's post-production words: the rest is text filmed in the scene
-        said = r and ((r.get("vlm") or {}).get("overlay_text") if isinstance((r.get("vlm") or {}).get("overlay_text"), list)
-                      else (r.get("review") or {}).get("overlay_text"))
+        said = shot_overlay_text(r) if r else None
         if isinstance(said, list) and not any(_same_words(c["text"], o) for o in said):  # [] = no post words in this shot
             c["part_of_picture"] = True
     src = breakdown.get("source") or {}
@@ -1939,7 +1946,7 @@ def finalize_pack(breakdown: dict, out: Path) -> dict | None:
     if cues:
         (d / "overlays.ass").write_text(to_ass([c for c in cues if not c.get("part_of_picture")], w, h), encoding="utf-8")
         pack["files"]["ass"] = "packaging/overlays.ass"
-    timeline = {"text": [{k: c.get(k) for k in ("id", "kind", "kind_zh", "t0", "t1", "text", "bbox", "style", "style_zh", "anim_in",
+    timeline = {"text": [{k: c.get(k) for k in ("id", "kind", "kind_zh", "t0", "t1", "text", "lines", "bbox", "style", "style_zh", "anim_in",
                                                  "anim_out", "mid_motion", "follows", "part_of_picture", "anchor", "persistent")} for c in cues],
                 "stickers": stickers,
                 "sfx": [{k: e.get(k) for k in ("t", "type", "description", "source", "confidence", "on")} for e in sfx]}

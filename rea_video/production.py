@@ -10,6 +10,7 @@ Edit shots (cut detection) are the facts; making them is organised differently:
 """
 from __future__ import annotations
 
+from .readings import shot_description
 from .i18n import LangDict, T, join, lang, model_name, semi, shot_ids
 
 import json
@@ -289,7 +290,7 @@ def _setups(shots: list[dict], sig: dict, thr: float, b: dict) -> list[dict]:
             support = SUPPORT_ZH.get(cam.get("support"), cam.get("support_zh") or "—")
             groups.setdefault((size, support), []).append(r)
         light = (((sc[0].get("aspects") or {}).get("lighting") or {}).get("result") or {})
-        desc = (sc[0].get("vlm") or sc[0].get("review") or {}).get("description", "")
+        desc = shot_description(sc[0])
         if named:
             nm = named[si - 1]
             desc = T("，", ", ").join(str(x) for x in (nm.get("where"), nm.get("look")) if x) or desc

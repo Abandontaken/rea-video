@@ -104,9 +104,12 @@ def video_info(path: str | Path) -> VideoInfo:
         raise MediaError(f"no video stream in {path}")
     v = vstreams[0]
     fmt = data.get("format", {})
-    fps = _ratio(v.get("avg_frame_rate")) or _ratio(v.get("r_frame_rate")) or 30.0
     duration = float(v.get("duration") or fmt.get("duration") or 0.0)
-    nb = int(v.get("nb_frames") or 0) or int(round(duration * fps))
+    nb_raw = int(v.get("nb_frames") or 0)
+    avg = _ratio(v.get("avg_frame_rate"))
+    rfps = _ratio(v.get("r_frame_rate"))
+    fps = avg or (nb_raw / duration if nb_raw and duration > 0 else 0.0) or (rfps if 0 < rfps <= 120 else 30.0)
+    nb = nb_raw or int(round(duration * fps))
     rotation = 0
     for sd in v.get("side_data_list", []) or []:
         if "rotation" in sd:

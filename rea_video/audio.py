@@ -401,12 +401,19 @@ def analyze_audio(path: str, cut_times: list[float] | None = None, visual_marks:
     if x is None or len(x) < SR * 0.3:
         return {"has_audio": False}
     dur = len(x) / SR
+    rms_dbfs = float(20 * np.log10(np.sqrt(np.mean(x ** 2)) + 1e-9))
+    peak_dbfs = float(20 * np.log10(np.abs(x).max() + 1e-9))
+    if peak_dbfs <= -70.0:
+        return {"has_audio": True, "duration": round(dur, 3), "rms_dbfs": round(rms_dbfs, 1), "peak_dbfs": round(peak_dbfs, 1),
+                "silence_ratio": 1.0, "voice": {"present": False, "ratio": 0.0, "segments": []},
+                "music": {"present": False, "ratio": 0.0, "segments": []}, "sfx": {"count": 0, "events": []},
+                "speech_likely": False, "music_likely": False, "tempo_bpm": None, "beat_synced_edit": False, "energy_curve": []}
     S = _stft(x)
     freqs = np.fft.rfftfreq(N_FFT, 1 / SR)
     Sh, Sp = hpss(S)
     frame_db = 10 * np.log10((S ** 2).mean(axis=1) + 1e-12)
     peak_db = float(np.percentile(frame_db, 99))
-    silent = frame_db < peak_db - 45
+    silent = (frame_db < peak_db - 45) | (frame_db < -95)
 
     # ---------------- voice ----------------------------------------------------------------
     band = (freqs > 300) & (freqs < 3400)

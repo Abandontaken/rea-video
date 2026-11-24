@@ -36,7 +36,7 @@ rea-video memory
 #    答案按 JEV 格式只写选项和概率，是 same 的 gap 不写；放大图先写 scenes（每块依次出现了哪几个东西）；关键帧图上整张写一次 look，不用改的镜头不写。开了 VLM 时 decompose 会自动做这一步
 rea-video survey ref.mp4 -o out/ref
 # ② 拆解（产出 out/<名>/VIDEO.md + video/（给你读的拆片包）、report.html / report.md（给用户看）、breakdown.json、storyboard.jpg、audio.png、shots/、stems/）
-rea-video --env-file <你的 .env> decompose ref.mp4 -o out/ref --vlm --lang <zh|en>   # --lang 按用户提问的语言选（见「交付给用户」）；没有 VLM 配置就去掉 --env-file 和 --vlm；字幕/花字是日文就加 --ocr-lang ja，是韩文就加 --ocr-lang ko；台词是孟加拉语就加 --asr-lang bn
+rea-video --env-file <你的 .env> decompose ref.mp4 -o out/ref --vlm --lang <zh|en>   # --lang 按用户提问的语言选（见「交付给用户」）；没有 VLM 配置就去掉 --env-file 和 --vlm；字幕/花字是纯英文就加 --ocr-lang en，是日文就加 --ocr-lang ja，是韩文就加 --ocr-lang ko；台词是孟加拉语就加 --asr-lang bn
 # ③ 看紧凑摘要：低置信镜头会被标出；先看 VLM: 那一行确认 VLM 是否生效
 rea-video summary out/ref/breakdown.json
 ```

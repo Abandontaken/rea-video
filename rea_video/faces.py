@@ -72,7 +72,7 @@ def _detector():
     return _DET
 
 
-def detect(frame: np.ndarray) -> list[dict]:
+def detect(frame: np.ndarray, min_area: float = MIN_AREA) -> list[dict]:
     """Faces in one BGR frame, largest first: {box: [x, y, w, h] in 0..1, area, score, landmarks: 5x[x, y] in 0..1 | None}."""
     det = _detector()
     if not det:
@@ -91,19 +91,20 @@ def detect(frame: np.ndarray) -> list[dict]:
         g = cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
         for (x, y, fw, fh) in d.detectMultiScale(g, scaleFactor=1.15, minNeighbors=5, minSize=(32, 32)):
             out.append({"box": [x / w, y / h, fw / w, fh / h], "area": fw * fh / (w * h), "score": 1.0, "landmarks": None})
-    out = [f for f in out if f["area"] >= MIN_AREA]
+    out = [f for f in out if f["area"] >= min_area]
     return sorted(out, key=lambda f: -f["area"])
 
 
 def shot_faces(frames: list[np.ndarray], max_frames: int = 6) -> dict:
-    """Face summary over a shot's sampled frames: presence ratio and the main face per sampled frame."""
+    """Face summary over a shot's sampled frames: presence ratio (MIN_AREA, for the classifier) and the main face per
+    sampled frame (including medium/full-shot faces on 16:9 landscape, for framing and format aspects)."""
     if not frames:
         return {"presence": 0.0, "frames": []}
     step = max(1, len(frames) // max_frames)
     picked = list(range(0, len(frames), step))[:max_frames]
     per = []
     for i in picked:
-        fs = detect(frames[i])
+        fs = [f for f in detect(frames[i], min_area=0.004) if f["area"] >= MIN_AREA or (f["box"][3] >= 0.08 and f["score"] >= 0.8)]
         per.append({"i": i, "face": fs[0] if fs else None, "count": len(fs)})
-    hits = sum(1 for p in per if p["face"])
+    hits = sum(1 for p in per if p["face"] and p["face"]["area"] >= MIN_AREA)
     return {"presence": hits / len(per), "frames": per}

@@ -207,9 +207,12 @@ def build_tasks(breakdown: dict, out_dir: str) -> tuple[dict, dict]:
              "shots": shots}
     if pk_tasks:
         tasks["packaging"] = pk_tasks
+    rec_by_id = {r["id"]: r for r in breakdown["shots"]}
     answers = {"by": "", "shots": [{"id": s["id"], "time": f"{s['start']:.2f}-{s['end']:.2f}",
                                      "label_probs": {}, "image_source": "unknown",
-                                     "evidence": [], "description": "", "narrative": {"role": "", "point": ""}, "embedded_assets": [], "ai_edits": [], "same_clip_as": None,
+                                     "evidence": [], "description": "", "narrative": {"role": "", "point": ""}, "embedded_assets": [],
+                                     "ai_edits": list(((rec_by_id.get(s["id"], {}).get("vlm") or {}).get("ai_edits")) or []),
+                                     "same_clip_as": None,
                                      "replication": {"image_prompt": "", "video_prompt": "", "video_prompt_en": ""},
                                      **({"aspects": aspects.review_template()} if shoot[s["id"]] else {}),
                                      **({"performance": dict(PERF_TEMPLATE)} if acting[s["id"]] else {})} for s in shots],
@@ -274,12 +277,15 @@ def _clean(ans: dict) -> tuple[dict | None, str | None]:
         ev = [ev] if ev.strip() else []
     elif not isinstance(ev, list):
         ev = []
+    raw_same = str(ans.get("same_clip_as") or "").strip()
+    m_same = re.fullmatch(r"(?:shot_)?0*(\d+)", raw_same, re.I)
+    same_clip = int(m_same.group(1)) if m_same and int(m_same.group(1)) > 0 else None
     return {"label_probs": soft, "raw_probs": {k: round(v / total, 3) for k, v in vals.items()}, "image_source": src,
             "evidence": [str(x) for x in ev][:8], "description": str(ans.get("description", "")),
             "embedded_assets": assets, "replication": rep, "aspects": aspects.clean_answers(ans.get("aspects")),
             "split_suggestion": split, "narrative": narrative.clean(ans.get("narrative")),
             "performance": performance.clean(ans.get("performance")),
-            "same_clip_as": int(ans["same_clip_as"]) if str(ans.get("same_clip_as", "")).strip().isdigit() else None,
+            "same_clip_as": same_clip,
             # the words added in post (subtitles, styled text, labels), like the VLM's overlay_text: OCR text in the
             # shot that matches none of them is part of the picture (a filmed phone screen, a gift box)
             "overlay_text": [str(x) for x in ans["overlay_text"] if str(x).strip()] if isinstance(ans.get("overlay_text"), list) else None,

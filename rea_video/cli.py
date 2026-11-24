@@ -67,6 +67,16 @@ def _check_vlm_config() -> None:
         raise SystemExit(f"rea-video: {exc}")
 
 
+def _vlm_client(out: Path):
+    from .vlm import make_client
+
+    client = make_client(out / "vlm_cache")
+    if client is None:
+        raise SystemExit(U("rea-video: --vlm 需要 GEMINI_API_KEY，或 REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL",
+                           "rea-video: --vlm needs GEMINI_API_KEY, or REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL"))
+    return client
+
+
 def cmd_decompose(args) -> int:
     from .pipeline import decompose
 
@@ -76,7 +86,13 @@ def cmd_decompose(args) -> int:
     out = Path(args.out) if args.out else Path("out") / Path(args.video).stem
     from .memory import pref
 
-    meta = read_json(Path(args.meta)) if args.meta else None
+    meta = None
+    if args.meta:
+        s_meta = args.meta.strip()
+        try:
+            meta = json.loads(s_meta) if s_meta.startswith("{") else read_json(Path(s_meta))
+        except (ValueError, OSError) as exc:
+            raise SystemExit(U(f"rea-video: --meta 解析失败：{exc}", f"rea-video: invalid --meta: {exc}"))
     use_vlm = args.vlm or (pref("vlm") == "on" and not args.no_vlm)
     if use_vlm:
         _check_vlm_config()
@@ -106,12 +122,9 @@ def cmd_survey(args) -> int:
     asker = None
     if args.vlm or (pref("vlm") == "on" and not args.no_vlm):
         _check_vlm_config()
-        from .vlm import VLMClient, VLMConfig, prompt_lang_note
+        from .vlm import prompt_lang_note
 
-        cfg = VLMConfig.from_env()
-        if cfg is None:
-            raise SystemExit(U("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL）", "rea-video: --vlm needs VLM settings (REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL)"))
-        asker = vlm_asker(VLMClient(cfg, out / "vlm_cache"), prompt_lang_note())
+        asker = vlm_asker(_vlm_client(out), prompt_lang_note())
     res = run(Path(args.video).expanduser().resolve(), out.expanduser().resolve(), track, detect_shots(track), info,
               asker=asker, workers=args.workers, detail=not args.no_detail)
     if res["status"] == "waiting":
@@ -138,25 +151,30 @@ def cmd_moments(args) -> int:
     if args.redo and (out / "moments").is_dir():
         shutil.rmtree(out / "moments")
         b.get("moments", {}).pop("items", None)
+        if "moments" in b:
+            b["moments"]["status"] = "pending"
     m = b.setdefault("moments", {})
-    if "hints" not in m:  # a breakdown made with --no-moments: the hints from the words and the voice (no decode)
+    track = None
+    if ("hints" not in m or "measured" not in m) and Path(b["source"]["path"]).is_file():
+        from .media import video_info
+        from .shots import build_track
+
+        track = build_track(b["source"]["path"], video_info(b["source"]["path"]))
+    if "hints" not in m:
         voc = out / "stems" / "vocals.wav"
         m.update(genre=mo.genre(b), status="pending",
-                 hints=mo.hints((b.get("speech") or {}).get("lines") or [], voc if voc.is_file() else None, None, b["source"]["duration"]))
+                 hints=mo.hints((b.get("speech") or {}).get("lines") or [], voc if voc.is_file() else None, track, b["source"]["duration"]))
+    if "measured" not in m and track is not None:  # a breakdown from before the frame measurements
+        fps = float(b["source"].get("fps") or track.fps or 30.0)
+        skips = [(int(round(s["transition"]["start"] * fps)), int(round(s["transition"]["end"] * fps)))
+                 for s in (b.get("shots") or [])[1:] if s.get("transition")]
+        m["measured"] = mo.measured(track, [s["start_frame"] for s in (b.get("shots") or [])[1:]], skip=skips)
     asker = None
     if args.vlm or (pref("vlm") == "on" and not args.no_vlm):
         _check_vlm_config()
-        from .vlm import VLMClient, VLMConfig, prompt_lang_note
+        from .vlm import prompt_lang_note
 
-        from . import gemini
-
-        cfg = VLMConfig.from_env()
-        if cfg is not None:
-            asker = mo.vlm_asker(VLMClient(cfg, out / "vlm_cache"), prompt_lang_note())
-        elif gemini.configured():  # only a Gemini key: Gemini's own API, which watches the clips with sound
-            asker = mo.vlm_asker(gemini.GeminiClient(), prompt_lang_note())
-        else:
-            raise SystemExit(U("rea-video: --vlm 需要 VLM 配置（REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL，或 GEMINI_API_KEY）", "rea-video: --vlm needs VLM settings (REA_VLM_BASE_URL / REA_VLM_API_KEY / REA_VLM_MODEL, or GEMINI_API_KEY)"))
+        asker = mo.vlm_asker(_vlm_client(out), prompt_lang_note())
     res = mo.run(b, out, asker=asker)
     if res["status"] == "waiting":
         res["next"] = T("看 images 里的图，按 tasks 里的说明把答案写进 waiting 里的文件（filled 改成 true），再运行同一条命令",
@@ -428,18 +446,27 @@ def cmd_tiles(args) -> int:
     times = list(np.arange(args.start, end, args.every))[: args.max]
     import tempfile
 
-    frames = []
+    focus_box = None
+    if getattr(args, "focus", None):
+        try:
+            vals = [float(v) for v in str(args.focus).replace("，", ",").split(",")]
+        except ValueError:
+            vals = []
+        if len(vals) != 4 or not (0.0 <= vals[0] < vals[2] <= 1.0 and 0.0 <= vals[1] < vals[3] <= 1.0):
+            raise SystemExit(U("rea-video: --focus 必须是 0–1 之间的 x0,y0,x1,y1（且 x0<x1, y0<y1）",
+                               "rea-video: --focus must be x0,y0,x1,y1 in 0..1 with x0<x1 and y0<y1"))
+        focus_box = vals
+    frames, kept_times = [], []
     with tempfile.TemporaryDirectory() as tmpd:
         for i, t in enumerate(times):
-            focus = getattr(args, "focus", None)
-            if focus:  # a region of the frame, enlarged to the cell width (x0,y0,x1,y1 in 0-1)
-                x0, y0, x1, y1 = (float(v) for v in str(focus).replace("，", ",").split(","))
+            if focus_box:  # a region of the frame, enlarged to the cell width (x0,y0,x1,y1 in 0-1)
+                x0, y0, x1, y1 = focus_box
                 p = extract_frame(args.video, float(t), Path(tmpd) / f"tile_{i:03d}.jpg")
                 img = read_image(p)
                 if img is not None:
                     h, w = img.shape[:2]
                     img = img[int(y0 * h):max(int(y0 * h) + 2, int(y1 * h)), int(x0 * w):max(int(x0 * w) + 2, int(x1 * w))]
-                    img = cv2.resize(img, (args.cell, max(2, int(args.cell * img.shape[0] / img.shape[1]))), interpolation=cv2.INTER_CUBIC)
+                    img = cv2.resize(img, (args.cell, max(2, int(args.cell * img.shape[0] / max(1, img.shape[1])))), interpolation=cv2.INTER_CUBIC)
             else:
                 p = extract_frame(args.video, float(t), Path(tmpd) / f"tile_{i:03d}.jpg", width=args.cell)
                 img = read_image(p)
@@ -453,13 +480,14 @@ def cmd_tiles(args) -> int:
                         cv2.putText(img, f".{k}", (x + 2, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
                         cv2.putText(img, f".{k}", (2, y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
                 frames.append(img)
+                kept_times.append(float(t))
     rows = [frames[i:i + args.cols] for i in range(0, len(frames), args.cols)]
     paths = []
     for r, row in enumerate(rows):
         out = Path(args.out) if len(rows) == 1 else Path(args.out).with_name(f"{Path(args.out).stem}_{r + 1}{Path(args.out).suffix}")
-        shot_sheet(row, [float(t) for t in times[r * args.cols:(r + 1) * args.cols]], out, n=len(row), cell_w=args.cell)
+        shot_sheet(row, kept_times[r * args.cols:(r + 1) * args.cols], out, n=len(row), cell_w=args.cell)
         paths.append(str(out))
-    print(json.dumps({"tiles": paths, "times": [round(float(t), 3) for t in times]}, ensure_ascii=False))
+    print(json.dumps({"tiles": paths, "times": [round(float(t), 3) for t in kept_times]}, ensure_ascii=False))
     return 0
 
 
@@ -605,7 +633,7 @@ def cmd_summary(args) -> int:
 
     for r in b["shots"]:
         base = r["base"]
-        alt = sorted(base["probs"].items(), key=lambda kv: -kv[1])[1]
+        alt = next((kv for kv in sorted(base["probs"].items(), key=lambda kv: -kv[1]) if kv[0] != base["label"]), ("-", 0.0))
         det = r["deterministic"]["probs"]
         past = None if base["decided_by"] == "user" or r.get("review") else hint_for(max(det, key=det.get), pats)  # looked at: settled
         mat = (r.get("material") or {}).get("origin_zh", "")
@@ -701,7 +729,7 @@ def cmd_plan(args) -> int:
     from .integrations.capsule_cinema import ref_clips
     from .pipeline import finalize
     from .plan import CAP, Planner, user_capabilities
-    from .production import _norm
+    from .production import _norm, pick_model
 
     out = Path(args.out_dir)
     intent = load_intent(out)
@@ -715,8 +743,12 @@ def cmd_plan(args) -> int:
 
         intent["model"] = pref("engine") or DEFAULT_MODEL
     pl = Planner()
-    live = {k: m for k, m in pl.models.items() if m.get("status") not in ("shutdown", "deprecated")}
+    live = {k: x for k, x in pl.models.items() if x.get("status") not in ("shutdown", "deprecated")}
     m = next((x for x in live.values() if _norm(x["id"]) == _norm(intent["model"]) or _norm(x.get("name", "")) == _norm(intent["model"])), None)
+    if m and not (m.get("category") == "video" and {"video.t2v", "video.i2v_first_frame"} & set(m.get("primitives", []))):
+        print(U(f"rea-video: {m['id']} 不是视频生成模型（需要支持文生视频或首帧生视频）。可选生视频模型：rea-video models",
+                f"rea-video: {m['id']} is not a video generation model (needs text-to-video or first-frame image-to-video). Available models: rea-video models"), file=sys.stderr)
+        return 2
     if not m:
         target = user_capabilities() / 'models' / (re.sub(r'[^a-z0-9.-]+', '-', intent['model'].lower()) + '.yaml')
         print(U(f"rea-video: 能力地图里没有 {intent['model']}。先查这个模型的官方文档（单次时长、能不能吃参考视频 / 参考图和各几个、"
@@ -862,7 +894,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--no-vlm", action="store_true", help="本次不开 VLM（覆盖 prefs 里的 vlm=on）")
     d.add_argument("--no-whole", action="store_true", help="跳过整片结构/文案 VLM 分析")
     d.add_argument("--no-ocr", action="store_true", help="不做 OCR（字幕/花字时间轴也会跳过，只剩贴纸检测）")
-    d.add_argument("--ocr-lang", choices=OCR_LANGS, help="字幕/花字的语言：zh 中英（默认）、ja 日文、ko 韩文（后两种首次使用自动下载识别模型）；也可用 prefs ocr_lang 设成默认")
+    d.add_argument("--ocr-lang", choices=OCR_LANGS, help="字幕/花字的语言：zh 中英（默认）、en 纯英文、ja 日文、ko 韩文（后三种首次使用自动下载识别模型）；也可用 prefs ocr_lang 设成默认")
     d.add_argument("--no-packaging", action="store_true", help="跳过剪辑包装层（整片字幕时间轴、花字、贴纸/动图、音效卡点）；省掉约每分钟 30–50 秒")
     d.add_argument("--lang", choices=LANGS, help="报告、结论和 VLM 描述的语言：zh（默认）/ en；按用户提问的语言选，也可用 prefs lang 设成默认")
     d.add_argument("--workers", type=int, default=3)

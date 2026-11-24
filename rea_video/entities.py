@@ -7,6 +7,7 @@ the per-shot references and a "no cast available" note instead of an empty secti
 """
 from __future__ import annotations
 
+from .classify import LABEL_ZH
 from .i18n import LangDict, T, join, semi
 
 KIND_ZH = LangDict({"person": "真人", "animal": "动物", "cartoon": "卡通形象", "avatar": "数字人", "product": "商品", "other": "其他"},
@@ -178,9 +179,9 @@ def open_questions(b: dict) -> list[str]:
         elif base.get("uncertain"):
             q.append(f"{tag}{T('：', ': ')}{base['uncertain']}")
         elif base.get("confidence", 1) < 0.6:
-            alt = sorted((base.get("probs") or {}).items(), key=lambda kv: -kv[1])[:2]
+            alt = [kv for kv in sorted((base.get("probs") or {}).items(), key=lambda kv: -kv[1]) if kv[0] != base.get("label")]
             q.append(tag + T("：{l} 只有 {c:.0%} 置信", ": {l} at only {c:.0%} confidence", l=base.get("label_zh", ""), c=base["confidence"])
-                     + (T("，次选 {a}", ", runner-up {a}", a=alt[1][0]) if len(alt) > 1 else ""))
+                     + (T("，次选 {a}", ", runner-up {a}", a=LABEL_ZH.get(alt[0][0], alt[0][0])) if alt else ""))
         unsure = sorted({it.get("kind_zh", "") for it in (r.get("material") or {}).get("items", []) if it.get("real_material") is None})
         if unsure:
             q.append(tag + T("：{k} 是真实素材还是生成的，待确认", ": {k}: real material or generated, to confirm", k=join(unsure)))

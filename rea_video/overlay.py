@@ -21,6 +21,11 @@ from .util import LOG, OCR_LANGS, fetch
 # model, which finds Japanese text lines fine; only the recognizer's character set has to change. The ONNX
 # files from RapidOCR carry their character list in the model metadata, so no separate dict is needed.
 _REC_MODELS = {
+    # for all-English text: keeps the spaces the bundled model tends to drop around digits ("Sale 2026/11/23");
+    # it cannot read Chinese, so mixed text stays on zh
+    "en": ("en_PP-OCRv4_rec_mobile.onnx",
+           "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv4/rec/en_PP-OCRv4_rec_mobile.onnx",
+           "e8770c967605983d1570cdf5352041dfb68fa0c21664f49f47b155abd3e0e318"),
     "ja": ("japan_PP-OCRv4_rec_mobile.onnx",
            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
            "e1075a67dba758ecfc7ebc78a10ae61c95ac8fb66a9c86fab5541e33f085cb7a"),

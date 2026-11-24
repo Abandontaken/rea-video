@@ -242,9 +242,10 @@ def _grab(video: str, info: VideoInfo, times: list[float], width: int = 160, fil
     order = sorted(range(len(times)), key=lambda k: times[k])
     sorted_t = [times[k] for k in order]
     t0, t1 = sorted_t[0], sorted_t[-1]
-    step = 1.0 / max(info.fps, 1)
+    rate = min(max(info.fps, 1.0), 60.0)
+    step = 1.0 / rate
     best: dict[int, tuple[float, np.ndarray]] = {}
-    for i, f in enumerate(iter_frames(video, info, width, start=t0, duration=t1 - t0 + 2 * step)):
+    for i, f in enumerate(iter_frames(video, info, width, start=t0, duration=t1 - t0 + 2 * step, fps=rate)):
         ft = t0 + i * step
         lo, hi = bisect.bisect_left(sorted_t, ft - step), bisect.bisect_right(sorted_t, ft + step)
         for j in range(lo, hi):
@@ -263,7 +264,9 @@ def _grab(video: str, info: VideoInfo, times: list[float], width: int = 160, fil
 
 def tile_size(info: VideoInfo, look: str) -> tuple[int, int]:
     """Tile width and height for a look (TILE_AREA), in the video's shape."""
-    aspect = info.width / info.height if info.width and info.height else 16 / 9
+    rot = getattr(info, "rotation", 0) in (90, 270)
+    dw, dh = (info.height, info.width) if rot else (info.width, info.height)
+    aspect = dw / dh if dw and dh else 16 / 9
     w = max(40, int(round(math.sqrt(TILE_AREA[look] * aspect))))
     return w, max(24, int(round(w / aspect)))
 
@@ -275,6 +278,8 @@ def _cols(tile_w: int, n: int) -> int:
 def _grid(frames: list[np.ndarray], labels: list[str], bars: list[float], cuts: list[bool], cols: int,
           tile_w: int) -> Image.Image:
     """Tiles in rows; under each tile a bar for the change in the gap after it; a red edge for detector cuts."""
+    if not frames:
+        return Image.new("RGB", (max(1, tile_w), 32), (24, 24, 24))
     font = _font(15 if tile_w >= 200 else (13 if tile_w >= 110 else 11))
     cells = []
     for f, lab, bar, cut in zip(frames, labels, bars, cuts):
@@ -800,13 +805,16 @@ def run(video: str | Path, out: Path, track: FrameTrack, shots: list[Shot], info
         if asker is None:
             return
 
+        import contextvars
+
         def one(t: dict) -> None:
             _, ap = _task_paths(sdir, t["id"])
             if reader(ap) is None:
                 got = asker(_public(t), [Path(out) / im for im in t["images"]])
                 write_json(ap, {"filled": True, "by": "vlm", **(got or {})})
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            list(pool.map(one, tasks))
+            for fut in [pool.submit(contextvars.copy_context().run, one, t) for t in tasks]:
+                fut.result()
 
     def waiting(tasks: list[dict], reader, stage: str, rnd: int) -> dict | None:
         left = [t for t in tasks if reader(_task_paths(sdir, t["id"])[1]) is None]

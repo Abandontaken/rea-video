@@ -25,16 +25,16 @@
 | `image.tryon` | 虚拟试穿 | ◐ `fashn-tryon-max`、◐ `fashn-v1.6`、◐ `kling-kolors-tryon`、◐ `kling-virtual-tryon-3`、◐ `qwen-image-2.1` |
 | `video.t2v` | 文生视频 | ◐ `flux-3-video`、○ `flux-3-video-max`、◐ `gemini-omni-flash`、◐ `grok-imagine-video-1.5`、○ `grok-imagine-video-1.5-lite`、◐ `hailuo-2.3`、○ `happyhorse-1.0`、◐ `heygen-video-1`、◐ `hunyuanvideo-1.5`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-4.0-flash`、◐ `kling-o3`、◐ `ltx-2.5`、○ `luma-ray3.2`、● `minimax-h3`、◐ `minimax-h3-max`、○ `p-video-2-pro`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `runway-gen-4.5`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、○ `skyreels-v4`、○ `utopai-x`、◐ `veo-3.1`、◐ `vidu-q3`、● `wan-2.2`、◐ `wan-3.0` |
 | `video.i2v_first_frame` | 图生视频（首帧） | ◐ `flux-3-video`、○ `flux-3-video-max`、◐ `gemini-omni-flash`、◐ `grok-imagine-video-1.5`、○ `grok-imagine-video-1.5-lite`、◐ `hailuo-2.3`、○ `happyhorse-1.0`、◐ `heygen-video-1`、◐ `hunyuanvideo-1.5`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-4.0-flash`、◐ `kling-o3`、◐ `ltx-2.5`、○ `luma-ray3.2`、● `minimax-h3`、◐ `minimax-h3-max`、○ `p-video-2-pro`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `runway-gen-4.5`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、○ `skyreels-v4`、◐ `veo-3.1`、◐ `vidu-q3`、◐ `vidu-q4-preview`、● `wan-2.2`、◐ `wan-3.0`、◐ `wan-vace` |
-| `video.i2v_first_last` | 首尾帧生成 | ◐ `flux-3-video`、○ `flux-3-video-max`、◐ `gemini-omni-flash`、◐ `grok-imagine-video-1.5`、◐ `heygen-video-1`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-o3`、● `minimax-h3`、◐ `minimax-h3-max`、○ `p-video-2-pro`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、◐ `veo-3.1`、◐ `wan-3.0` |
+| `video.i2v_first_last` | 首尾帧生成 | ◐ `flux-3-video`、○ `flux-3-video-max`、◐ `gemini-omni-flash`、◐ `grok-imagine-video-1.5`、◐ `heygen-video-1`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-o3`、● `minimax-h3`、◐ `minimax-h3-max`、○ `p-video-2-pro`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、◐ `veo-3.1`、◐ `vidu-q3`、◐ `wan-3.0` |
 | `video.keyframes` | 多关键帧控制 | ◐ `flux-3-video`、○ `flux-3-video-max`、◐ `grok-imagine-video-1.5`、◐ `kling-4.0`、◐ `runway-gen-4.5` |
 | `video.multi_reference` | 多参考生视频（主体一致） | ◐ `gemini-omni-flash`、◐ `grok-imagine-video-1.5`、○ `happyhorse-1.0`、◐ `heygen-video-1`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-4.0-flash`、◐ `kling-o3`、● `minimax-h3`、◐ `minimax-h3-max`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、◐ `veo-3.1`、◐ `vidu-q3`、◐ `vidu-q4-preview`、◐ `wan-3.0` |
 | `video.reference_video` | 参考视频生成（动作/运镜/特效迁移） | ◐ `gemini-omni-flash`、◐ `heygen-video-1`、◐ `kling-4.0`、◐ `kling-4.0-flash`、◐ `kling-o3`、● `minimax-h3`、◐ `minimax-h3-max`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、○ `skyreels-v4`、◐ `wan-3.0` |
 | `video.reference_audio` | 参考音频生成 | ◐ `grok-imagine-video-1.5`、◐ `heygen-video-1`、◐ `kling-4.0-flash`、◐ `ltx-2.5`、● `minimax-h3`、◐ `minimax-h3-max`、◐ `pika-h3-flex`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、◐ `vidu-q4-preview`、◐ `wan-3.0` |
-| `video.multi_shot` | 单次多镜头 | ◐ `flux-3-video`、◐ `gemini-omni-flash`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-4.0-flash`、◐ `kling-o3`、◐ `ltx-2.5`、● `minimax-h3`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `seedance-2.0`、● `seedance-2.5`、◐ `veo-3.1`、◐ `vidu-q4-preview`、◐ `wan-3.0` |
+| `video.multi_shot` | 单次多镜头 | ◐ `flux-3-video`、◐ `gemini-omni-flash`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-4.0-flash`、◐ `kling-o3`、◐ `ltx-2.5`、● `minimax-h3`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `seedance-2.0`、● `seedance-2.5`、◐ `veo-3.1`、◐ `vidu-q3`、◐ `vidu-q4-preview`、◐ `wan-3.0` |
 | `video.extend` | 续写延长 | ◐ `flux-3-video`、◐ `gemini-omni-flash`、● `seedance-2.5`、◐ `veo-3.1` |
 | `video.edit_v2v` | 视频编辑（保留运动） | ◐ `flux-3-video`、◐ `gemini-omni-flash`、○ `happyhorse-1.0`、○ `higgsfield-genjutsu`、◐ `kling-4.0`、◐ `kling-o3`、◐ `ltx-2.5`、○ `luma-ray3.2`、◐ `pika-h3-flex`、○ `runway-aleph-2`、◐ `runway-gen-4.5`、◐ `seedance-2.0`、● `seedance-2.5`、○ `skyreels-v4`、◐ `viggle-animate`、◐ `wan-2.2-animate`、○ `wan-2.7-edit`、◐ `wan-vace` |
 | `video.camera_control` | 运镜与镜头参数控制 | ◐ `gemini-omni-flash`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `pixverse-v6`、○ `runway-aleph-2`、◐ `runway-gen-4.5`、● `seedance-2.5` |
-| `video.native_audio` | 音画同出 | ◐ `flux-3-video`、○ `flux-3-video-max`、◐ `gemini-omni-flash`、◐ `grok-imagine-video-1.5`、○ `grok-imagine-video-1.5-lite`、◐ `heygen-video-1`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-4.0-flash`、◐ `ltx-2.5`、○ `luma-ray3.2`、● `minimax-h3`、◐ `minimax-h3-max`、○ `p-video-2-pro`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `runway-gen-4.5`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、○ `skyreels-v4`、○ `utopai-x`、◐ `veo-3.1`、◐ `vidu-q3`、◐ `vidu-q4-preview`、◐ `wan-3.0` |
+| `video.native_audio` | 音画同出 | ◐ `flux-3-video`、○ `flux-3-video-max`、◐ `gemini-omni-flash`、◐ `grok-imagine-video-1.5`、○ `grok-imagine-video-1.5-lite`、◐ `heygen-video-1`、◐ `kling-3.0`、◐ `kling-4.0`、◐ `kling-4.0-flash`、◐ `kling-o3`、◐ `ltx-2.5`、● `minimax-h3`、◐ `minimax-h3-max`、○ `p-video-2-pro`、◐ `pika-h3-flex`、◐ `pixverse-v6`、◐ `seedance-2.0`、● `seedance-2.5`、○ `seedance-2.5-flash`、○ `skyreels-v4`、○ `utopai-x`、◐ `veo-3.1`、◐ `vidu-q3`、◐ `vidu-q4-preview`、◐ `wan-3.0` |
 | `video.control_video` | 控制视频驱动生成 | ◐ `wan-vace` |
 | `motion.transfer` | 动作迁移 | ○ `dreamactor-m2.0`、○ `higgsfield-genjutsu`、◐ `kling-motion-control`、◐ `runway-gen-4.5`、◐ `viggle-animate`、◐ `viggle-v4`、◐ `wan-2.2-animate`、◐ `wan-animate-2` |
 | `avatar.audio_driven` | 音频驱动数字人 | ○ `creatify-aurora`、○ `hedra-omnia`、◐ `heygen-avatar-v`、◐ `kling-avatar-v2`、◐ `longcat-video-avatar-1.5`、◐ `ltx-2.3-lipsync`、◐ `ltx-2.5`、◐ `mirage-avatar-x`、◐ `omnihuman-2.0`、◐ `sync-3`、◐ `synthesia-express-3`、○ `veed-fabric-1.0` |
@@ -146,7 +146,7 @@
 | Gemini Omni Flash | Google | video | ga | 15 | 是 | 是 | vendor 2026-11-12 |
 | Grok Imagine Video 1.5 | xAI | video | ga | 15 | 是 | 有条件 | vendor 2026-11-12 |
 | Grok Imagine Video 1.5 Lite | xAI | video | ga | 15 | 是 | 有条件 | vendor 2026-11-12 |
-| Hailuo 2.3 / 2.3 Fast（海螺） | MiniMax | video | ga | 10 | 是 | 是 | third-party 2026-10-29 |
+| Hailuo 2.3 / 2.3 Fast（海螺） | MiniMax | video | ga | 10 | 否 | 是 | third-party 2026-10-29 |
 | HappyHorse 1.0 | Alibaba | video | ga |  |  | 有条件 | third-party 2026-11-12 |
 | HeyGen Video 1 | HeyGen | video | ga | 30 | 是 | 有条件 | vendor 2026-11-12 |
 | Higgsfield Genjutsu（含 Lite） | Higgsfield | video | ga |  |  | 有条件 | vendor 2026-11-12 |
@@ -154,16 +154,16 @@
 | Kling 3.0（含 Turbo） | Kuaishou | video | ga | 15 | 是 | 是 | third-party 2026-10-29 |
 | Kling 4.0（可灵 4.0） | Kuaishou | video | ga | 30 | 是 | 是 | vendor 2026-11-12 |
 | Kling 4.0 Flash（可灵 4.0 Flash） | Kuaishou | video | ga | 20 | 是 | 是 | vendor 2026-11-12 |
-| Kling O3（Omni） | Kuaishou | video | ga | 15 | 否 | 是 | third-party 2026-10-29 |
+| Kling O3（Omni） | Kuaishou | video | ga | 15 | 是 | 是 | vendor 2026-11-22 |
 | LTX-2.5（开源） | Lightricks | video | ga |  | 是 | 有条件 | third-party 2026-11-12 |
-| Luma Ray3.2 / Modify | Luma AI | video | ga | 10 | 是 | 是 | vendor 2026-11-12 |
+| Luma Ray3.2 / Modify | Luma AI | video | ga | 10 | 否 | 是 | vendor 2026-11-12 |
 | MiniMax H3 / H3 Max | MiniMax | video | ga | 15 | 是 | 有条件 | vendor 2026-11-22 |
 | MiniMax H3 Max | MiniMax | video | ga | 15 | 是 | 有条件 | vendor 2026-11-12 |
 | P-Video-2-Pro | Pruna AI | video | ga | 15 | 是 | 有条件 | third-party 2026-11-12 |
 | Pika H3 Flex | Pika | video | ga | 15 | 是 | 有条件 | vendor 2026-11-12 |
 | PixVerse V6 | PixVerse（爱诗科技） | video | ga | 15 | 是 | 是 | third-party 2026-10-29 |
 | Runway Aleph 2 | Runway | video | ga |  |  | 是 | vendor 2026-11-12 |
-| Runway Gen-4.5（含 Act-Two） | Runway | video | ga | 10 | 是 | 是 | third-party 2026-10-29 |
+| Runway Gen-4.5（含 Act-Two） | Runway | video | ga | 10 | 否 | 是 | third-party 2026-10-29 |
 | Seedance 2.0（含 Mini / Fast） | ByteDance Seed | video | ga | 15 | 是 | 是 | third-party 2026-11-11 |
 | Seedance 2.5 | ByteDance Seed | video | ga | 30 | 是 | 是 | vendor 2026-11-11 |
 | Seedance 2.5 Flash | ByteDance Seed | video | preview |  | 是 | 有条件 | third-party 2026-11-12 |

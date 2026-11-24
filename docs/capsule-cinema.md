@@ -1,6 +1,6 @@
 # capsule-cinema 对接
 
-`remake-run` 和 `capsule-draft` 会用 **capsule-cinema 自己的 Python 环境**运行包里的 `rea_video/integrations/run_remake.py`、`to_capsule.py`（它们会 import capsule-cinema 的 `lib/` 和 `scripts/`，并读取它的 `.env`）。解释器按 `--python` > `$CAPSULE_CINEMA_PYTHON` > `<capsule-root>/.venv/bin/python` 的顺序找。rea-video 本身只依赖 numpy/opencv/pillow/pyyaml。
+`remake`、`remake-run`、`assemble` 会调用 `<capsule-root>/scripts/remake_reference.py`，`capsule-draft` 会用 **capsule-cinema 自己的 Python 环境**运行 `rea_video/integrations/to_capsule.py`（读取它的 `.env`）。解释器按 `--python` > `$CAPSULE_CINEMA_PYTHON` > `<capsule-root>/.venv/bin/python` 的顺序找。rea-video 本身只依赖 numpy/opencv/pillow/pyyaml。
 
 ```bash
 CC=~/code/github/capsule-cinema          # capsule-cinema 仓库

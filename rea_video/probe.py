@@ -146,15 +146,21 @@ def provenance(info: VideoInfo) -> dict:
         short = key.split(".", 1)[-1]
         if short in CAMERA_KEYS:
             hints["camera"].append(f"{short}={value}")
-        if any(a in short for a in AIGC_KEYS) or re.search(r"\baigc\b", value, re.I):
-            aigc = parse_aigc(value) or {"label": "", "meaning": T("无法解析", "could not be parsed"), "raw": value[:200]}
-            strong = aigc.get("label") in ("1", "2", "3")
+        is_aigc_key = any(a in short for a in AIGC_KEYS)
+        parsed = parse_aigc(value) if is_aigc_key or re.search(r"\baigc\b", value, re.I) else None
+        if parsed and not is_aigc_key and short in FREE_TEXT_KEYS and parsed["label"] not in ("1", "2", "3"):
+            parsed = None  # typed text that mentions AIGC; a real label in a comment tag carries a valid value
+        if parsed or is_aigc_key:
+            cand = parsed or {"label": "", "meaning": T("无法解析", "could not be parsed"), "raw": value[:200]}
+            strong = cand.get("label") in ("1", "2", "3")
+            if aigc is None or strong or not aigc.get("label"):
+                aigc = cand
             evidence.append({"kind": "aigc_label", "detail": T("AIGC 隐式标识 Label={l}（{m}），生成服务方编码 {p}",
                                                                "Implicit AIGC label Label={l} ({m}), content producer code {p}",
-                                                               l=aigc.get('label'), m=aigc.get('meaning'), p=aigc.get('content_producer') or '—'),
+                                                               l=cand.get('label'), m=cand.get('meaning'), p=cand.get('content_producer') or '—'),
                              "weight": "strong" if strong else "weak"})
-            if aigc.get("label") == "1":
-                hints["generator"].append(T("AIGC 标识（{m}）", "AIGC label ({m})", m=aigc.get('meaning')))
+            if cand.get("label") == "1":
+                hints["generator"].append(T("AIGC 标识（{m}）", "AIGC label ({m})", m=cand.get('meaning')))
 
     # tags a tool writes about itself (encoder, handler, software ...) versus text a person typed (title,
     # description, comment ...): a generator named in typed text is what the video is about, not how it was made

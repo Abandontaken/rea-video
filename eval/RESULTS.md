@@ -173,7 +173,7 @@
 
 ## 复现
 
-清单里的视频路径指向各自的来源目录（`${CAPSULE}` 是 capsule-cinema 仓库）；找不到时会用 `eval/media/<样本 id>.<扩展名>`。视频不随仓库分发，缺的样本会在评测输出的 `missing` 里列出，分数只覆盖找得到的那部分。
+评测视频和清单不随仓库分发。
 
 ```bash
 export CAPSULE_CINEMA_ROOT=~/code/github/capsule-cinema

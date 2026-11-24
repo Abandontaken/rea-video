@@ -191,6 +191,14 @@ def boundary_f1(pred: list[float], gt: list[float], tol: float = 0.1, ignore: li
     return {"precision": round(prec, 3), "recall": round(rec, 3), "f1": round(f1, 3), "tp": tp, "fp": fp, "fn": len(gt) - tp}
 
 
+def sudden_recall(truth: list[dict], found: list[dict], tol: float = 0.12) -> dict:
+    """Local changes without a cut: a labelled one is found when a candidate is close in time and inside its box."""
+    def hit(g: dict, f: dict) -> bool:
+        x, y = (f["box"][0] + f["box"][2]) / 2, (f["box"][1] + f["box"][3]) / 2
+        return abs(f["t"] - g["t"]) <= tol and g["box"][0] <= x <= g["box"][2] and g["box"][1] <= y <= g["box"][3]
+    return {"truth": len(truth), "found": sum(any(hit(g, f) for f in found) for g in truth), "candidates": len(found)}
+
+
 def resolution_bucket(src: dict) -> str:
     """Short side of the picture as shown, rounded to the usual tiers."""
     w, h = src.get("width") or 0, src.get("height") or 0
@@ -341,6 +349,8 @@ def evaluate(labels_path: Path, out: Path, use_vlm: bool = False, ocr: bool = Tr
                                          ignore=entry.get("cuts_uncertain"),
                                          spans=[(s["transition"]["start"], s["transition"]["end"]) if s.get("transition") else None
                                                 for s in b["shots"][1:]])
+        if entry.get("sudden"):
+            row["sudden"] = sudden_recall(entry["sudden"], ((b.get("moments") or {}).get("measured") or {}).get("sudden") or [])
         if entry.get("image_source"):
             srcs = {s["base"].get("image_source") for s in b["shots"]}
             row["image_source_ok"] = entry["image_source"] in srcs
@@ -386,6 +396,11 @@ def evaluate(labels_path: Path, out: Path, use_vlm: bool = False, ocr: bool = Tr
         summary["cuts"] = {"truth": tp + fn, "found": tp, "false": fp,
                            "recall": round(tp / (tp + fn), 3) if tp + fn else None,
                            "precision": round(tp / (tp + fp), 3) if tp + fp else None}
+    suddens = [r["sudden"] for r in rows if "sudden" in r]
+    if suddens:
+        s_tot, s_hit, s_cand = (sum(x[k] for x in suddens) for k in ("truth", "found", "candidates"))
+        summary["sudden"] = {"truth": s_tot, "found": s_hit, "candidates": s_cand,
+                             "recall": round(s_hit / s_tot, 3) if s_tot else None}
     result = {"summary": summary, "rows": rows,
               "confusion_seconds": {g: {p: round(v, 1) for p, v in ps.items() if v} for g, ps in confusion.items() if any(ps.values())}}
     write_json(out / "eval_result.json", result)

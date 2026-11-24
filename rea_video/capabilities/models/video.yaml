@@ -198,11 +198,13 @@ models:
     release: 2026-03
     status: ga
     access: [app, api, api-aggregator]
-    primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.multi_shot, video.edit_v2v, video.reference_video]
+    primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.multi_shot, video.edit_v2v, video.reference_video, video.native_audio]
     limits:
       duration_s: {min: 3, max: 15}
       resolutions: [720p, 1080p, 4K]
-    audio: {native: false}
+      refs: {image: 7, video: 1}
+      ref_video_s: {min: 3, max: 10}
+    audio: {native: true}
     strengths:
       - 视频改视频：换角色或道具、重新风格化、重打光，保留原动作
       - Element 参考一致性更强；Director Mode 可组合文本、首尾帧、参考图和角色视频
@@ -211,9 +213,10 @@ models:
     license: {commercial: true, note: 以平台条款为准}
     sources:
       - https://help.artlist.io/hc/en-us/articles/37026869403933-Kling-3-Model-Family
-    verified: {date: 2026-10-29, basis: third-party}
+      - https://kling.ai/quickstart/klingai-video-3-omni-model-user-guide
+    verified: {date: 2026-11-22, basis: vendor}
     confidence: medium
-    notes: 发布月份为估计值；音频能力资料未提及
+    notes: 发布月份为估计值；传了参考视频时不能同时开原生音频
 
   - id: veo-3.1
     name: Veo 3.1（含 Lite）
@@ -314,7 +317,8 @@ models:
     limits:
       duration_s: {min: 3, max: 15}
       resolutions: [720p, 1080p, 4K]
-      refs: {image: 6}
+      refs: {image: 6, video: 1}
+      ref_video_s: {max: 3}
     audio: {native: true}
     strengths:
       - 文本、图像、音频、视频任意组合输入；草图可作为动作引导
@@ -344,7 +348,7 @@ models:
     release: 2026-04
     status: ga
     access: [app, api, api-aggregator]
-    primitives: [video.t2v, video.i2v_first_frame, video.multi_reference, video.native_audio]
+    primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.multi_shot, video.native_audio]
     limits:
       duration_s: {max: 16}
     audio: {native: true}
@@ -595,7 +599,7 @@ models:
     limits:
       duration_s: {max: 10}
       resolutions: [768p, 1080p]
-    audio: {native: true}
+    audio: {native: false}
     strengths:
       - 微表情、风格化、动作有提升
       - 便宜（Fast 版 768p 6 秒约 0.19 美元起）
@@ -789,11 +793,11 @@ models:
     release: 2025-12
     status: ga
     access: [app, api]
-    primitives: [video.t2v, video.i2v_first_frame, video.keyframes, video.edit_v2v, video.camera_control, motion.transfer, video.native_audio]
+    primitives: [video.t2v, video.i2v_first_frame, video.keyframes, video.edit_v2v, video.camera_control, motion.transfer]
     limits:
       duration_s: {max: 10}
       resolutions: [720p]
-    audio: {native: true}
+    audio: {native: false}
     strengths:
       - 控制工具最全：关键帧、运动笔刷、相机路径
       - Act-Two 能把驱动表演迁移到角色图上
@@ -857,11 +861,11 @@ models:
     release: 2026-06
     status: ga
     access: [app, api]
-    primitives: [video.t2v, video.i2v_first_frame, video.edit_v2v, video.native_audio]
+    primitives: [video.t2v, video.i2v_first_frame, video.edit_v2v]
     limits:
       duration_s: {max: 10}
       resolutions: [1080p]
-    audio: {native: true}
+    audio: {native: false}
     strengths:
       - Modify 能替换演员并保留原动作和时序
       - Ray 有"推理式"自我修正，提示词遵循好

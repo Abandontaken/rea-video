@@ -18,7 +18,7 @@ HELP = {
     "decompose.no_vlm": "no VLM this run (overrides vlm=on in prefs)",
     "decompose.no_whole": "skip the whole-video structure and copy analysis",
     "decompose.no_ocr": "skip OCR (also skips the caption and text timelines, leaving sticker detection only)",
-    "decompose.ocr_lang": "caption language: zh Chinese and English (default), ja Japanese, ko Korean (the last two download a model on first use); set a default with prefs ocr_lang",
+    "decompose.ocr_lang": "caption language: zh Chinese and English (default), en English only, ja Japanese, ko Korean (the last three download a model on first use); set a default with prefs ocr_lang",
     "decompose.no_packaging": "skip the edit packaging layer (caption timeline, styled text, stickers / GIFs, sound-effect sync); saves about 30-50 s per minute of video",
     "decompose.lang": "language of the report, verdict and VLM descriptions: zh (default) / en; follow the language of the request, or set a default with prefs lang",
     "decompose.max_vlm_shots": "maximum VLM calls (default 60); with more shots, the least certain go first and the rest use measured evidence only",

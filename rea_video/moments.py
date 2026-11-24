@@ -29,7 +29,7 @@ import numpy as np
 from .i18n import LangDict, T
 from .util import LOG, fmt_time, read_json, write_json
 
-VERSION = 2
+VERSION = 3
 STEP = 0.25            # seconds per hint sample
 TOP_HINTS = 24
 MAX_MOMENTS = 10
@@ -46,6 +46,13 @@ EXPLAIN_TILES = 24
 EXPLAIN_LONG = 10.0    # longest stretch shown to explain one moment (s)
 MAX_STEPS = 6
 WINDOW_MAX = 3.0       # longest frame-by-frame stretch (s)
+# a part of the picture that was at rest and changes for good in one frame, with no cut (something appears / is swapped)
+SUDDEN_GRID, SUDDEN_PRE, SUDDEN_POST = (16, 25), 3, 3  # blocks across, down (portrait); frames looked at before / after
+SUDDEN_STILL, SUDDEN_JUMP, SUDDEN_KEEP = 9.0, 12.0, 0.8  # grey levels: at rest before; the jump; share of it that stays
+SUDDEN_AREA = (0.015, 0.30)  # share of the picture
+SUDDEN_MAX_ASPECT = 4.0      # wider than this is a line of text popping in
+SUDDEN_TOP = 6
+SURE = ("seen", "likely", "unknown")
 TILE_AREA = {"find": 160 * 90, "pin": 256 * 144, "explain": 320 * 180}
 
 KIND = LangDict({"reveal": "揭秘 / 变化时刻", "twist": "反转时刻", "climax": "高潮时刻", "goof": "穿帮时刻"},
@@ -77,6 +84,7 @@ FIND_INSTRUCTIONS = """你是短视频剪辑师，在找这条视频里值得单
 格子太小看不清时用 state.zoom_cmd 抽一段大图看（把 {start} {end} {every} 换成秒数、{name} 换成一个文件名；段长时 every 写大一点；东西小就加 --focus 只放大那一块；输出可能分成 _1、_2…，以命令打印的 tiles 列表为准；写在 look/zoom/ 里没关系）；
 能直接看视频的（比如 Gemini）：可以直接看 state.video（带声音），比小格准，时间用整片的秒数写；
 state.hints 是工具从声音和画面里测到的候选（有人惊呼、人声突然变大、快速动作后突然定住），大约只有一成是真的，只用来提醒你去看哪里。
+state.measured 是逐帧量出来的：cuts 是剪辑点；sudden 是「某块画面上一帧还没有、这一帧突然变了、前后没有剪断」的位置（东西凭空出现常在这里，但手快速划过也会被量到，要看图确认）。
 先通读台词弄清这条视频在演什么（谁要变什么、剧情走到哪），再对着总览找画面上发生变化的地方。
 
 按 JEV 格式回答，只回 JSON：{"moments": ["开始秒-结束秒 类型 概率 一句话：发生了什么", ...]}
@@ -101,7 +109,7 @@ EXPLAIN_INSTRUCTIONS = """你是做魔术揭秘 / 高光解说的剪辑师，要
 图里每一块是一段（标题写着段编号和时间），从初始状态到变化之后，格子标签是 "编号 秒数"；state 里每段有上一轮的 what / how 和关键帧 frames（秒）。
 
 按 JEV 格式回答，只回 JSON：{"<段编号>": {"steps": ["4.0 两只空碗倒扣在地上", "5.0 右手扣住左边的碗 @.36,.72", "*5.1 指缝下面出现核桃 @.36,.73", "7.6 松手，镜头这头才看见"],
-"frames": "4.83-5.37", "focus": ".15,.50,.55,.90", "what": "一句话（可不写）", "seen": "一句话", "guess": "推测：一句话", "why": "一句话"}, ...}
+"frames": "4.83-5.37", "focus": ".15,.50,.55,.90", "what": "一句话（可不写）", "seen": "一句话", "before": "前一帧这个位置有什么", "guess": "推测：一句话", "sure": "seen|likely|unknown", "why": "一句话"}, ...}
 - steps：3-6 步，按时间排，每步 "秒数 一句话"（关键动作那几步尽量落在 frames 里，比如"指尖捏着核桃靠近碗""手盖住碗""碗里看清核桃"）；一句话只写画面里看得见的事，不超过 20 字。可以超出图里的时间范围（变化更早 / 更晚时）。
 - 关键一步前面加 *：东西第一次看得清地出现 / 消失 / 换掉的那一帧（短片会定格在这一帧，一团运动模糊的不行，往后挪到第一帧清楚的）。变化常常比镜头亮出来、人惊呼早，要往前找（手盖住、挡住、换手、镜头晃开的时候）；更早那帧只是模糊的一团，可以作为前一步写进去。格子看不清就用 state.zoom_cmd 抽密的大图逐帧看，秒数写到 0.1 以内。
 - 先核对上一轮的 what / 关键帧：逐帧放大看过后发现不对（比如东西其实还在手上），以你这一轮看到的为准，what 和 steps 都按新的写。
@@ -112,7 +120,10 @@ EXPLAIN_INSTRUCTIONS = """你是做魔术揭秘 / 高光解说的剪辑师，要
 - 每一步默认按 focus 放大；要看整个画面的一步（比如另一个人的反应）在句末写 "@全"。
 - focus：放大区域 "x0,y0,x1,y1"（0-1，整幅画面坐标），图解和短片都按它放大，框越小放越大；框住手和道具、去掉模板和横幅；整个画面都要看就不写。框的宽高比会被限制在 0.6-1.8（太扁太窄会往外扩），短片里放大的画面按原比例加黑边。
 - what：一句话重写这一段发生了什么（必写，图解标题用它；里面提到的秒数要和关键一步一致，或者干脆不写秒数）。
-- seen：画面里看得到的证据（写秒数）。guess：画面里看不到、靠推测的部分（手法、道具从哪来），以"推测："开头；没有就不写。why：观众为什么没发现（注意力被引到哪了）；不是魔术可以不写。"""
+- seen：画面里看得到的证据（写秒数）。guess：画面里看不到、靠推测的部分（手法、道具从哪来），以"推测："开头；没有就不写。why：观众为什么没发现（注意力被引到哪了）；不是魔术可以不写。
+- before：必写。放大看关键一步的**前一帧**，同一个位置上有什么（"0.17s 碗里只有面，看不到薯塔"）。写 guess 之前先拿它核对：手法要求东西事先在那里，而前一帧看不到，这个手法就不成立，换一个或写不知道。
+- sure：手法有多确定，三选一：seen（手法本身在画面里看得到）、likely（有证据但没直接看到）、unknown（说不清怎么做到的）。说不清就写 unknown，不要编一个听起来合理的解释。
+- state 里每段的 measured 是这一段逐帧量出来的剪辑点和局部突变。说「这里剪了一刀」要对得上 cuts；关键一步落在 cuts 上而解释没提剪辑，也要说明。对不上的会在报告里标「待确认」。"""
 FOCUS = {"magic": "这是魔术视频：每段魔术的变化瞬间（东西出现、消失、换了），以及露馅 / 穿帮的地方。",
          "drama": "这是剧情视频：反转、情绪高潮，以及穿帮（道具、工作人员、前后不连贯）。",
          "": "精彩的高光时刻：变化 / 揭秘、反转、高潮，以及穿帮。"}
@@ -219,6 +230,104 @@ def hints(lines: list[dict], vocals: Path | None, track, dur: float, top: int | 
     return [{"t": round(float(p["t"]), 2), "score": round(float(p["score"]), 2), "why": p["why"][:3]} for p in sorted(best, key=lambda p: p["t"])]
 
 
+def sudden_changes(track, bounds: list[int], top: int | None = None,
+                   skip: list[tuple[int, int]] | None = None) -> list[dict]:
+    """Parts of the picture that were at rest and change for good in a single frame, inside one shot: where something
+    appears out of nothing or is swapped. A fast hand can look the same, so these are candidates for a reader."""
+    if track is None or not track.thumbs or track.n < SUDDEN_PRE + SUDDEN_POST + 2:
+        return []
+    import cv2
+
+    h, w = track.thumbs[0].shape[:2]
+    grid = SUDDEN_GRID if h >= w else SUDDEN_GRID[::-1]
+    B = np.stack([cv2.resize(t, grid, interpolation=cv2.INTER_AREA) for t in track.thumbs]).astype(np.float32)
+    ts = np.asarray(track.times, dtype=float) if track.times is not None and len(track.times) else np.arange(track.n) / track.fps
+    edges = sorted(int(x) for x in bounds if 0 < int(x) < track.n)
+    spans = [(int(a), int(z)) for a, z in (skip or [])]
+    found: list[dict] = []
+    for a, z in zip([0] + edges, edges + [track.n]):
+        for i in range(a + SUDDEN_PRE, z - SUDDEN_POST):
+            if any(sa - 1 <= i <= sz + 1 for sa, sz in spans):
+                continue
+            before = B[i - SUDDEN_PRE:i]
+            ref = np.median(before, axis=0)
+            mask = ((before.max(axis=0) - before.min(axis=0)) < SUDDEN_STILL) & (np.abs(B[i] - B[i - 1]) > SUDDEN_JUMP) \
+                & (np.abs(B[i:i + SUDDEN_POST + 1] - ref).min(axis=0) > SUDDEN_JUMP * SUDDEN_KEEP)
+            if not mask.any():
+                continue
+            mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+            k, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+            for x, y, bw, bh, cells in stats[1:k]:
+                area = cells / mask.size
+                box = [x / grid[0], y / grid[1], (x + bw) / grid[0], (y + bh) / grid[1]]
+                pw, ph = (box[2] - box[0]) * w, (box[3] - box[1]) * h
+                if not SUDDEN_AREA[0] <= area <= SUDDEN_AREA[1] or pw / max(ph, 1e-6) > SUDDEN_MAX_ASPECT:
+                    continue
+                if x == 0 or y == 0 or x + bw >= grid[0] or y + bh >= grid[1]:
+                    continue  # reaches the edge of the picture: an arm or a body coming in, not something appearing
+                found.append({"t": round(float(ts[i]), 3), "frame": i, "area": round(float(area), 4), "box": [round(float(v), 3) for v in box]})
+    keep = sorted(found, key=lambda f: -f["area"])[:top or max(SUDDEN_TOP, int(float(ts[-1]) / 10))]
+    return sorted(keep, key=lambda f: f["t"])
+
+
+def measured(track, bounds: list[int], skip: list[tuple[int, int]] | None = None) -> dict:
+    """What the frames say, for the reader to check an explanation against: the cuts and the sudden local changes."""
+    if track is None or track.n == 0:
+        return {"cuts": [], "sudden": [], "frame_s": 0.04}
+    ts = np.asarray(track.times, dtype=float) if track.times is not None and len(track.times) else np.arange(track.n) / track.fps
+    return {"cuts": [round(float(ts[int(b)]), 3) for b in bounds if 0 < int(b) < track.n], "sudden": sudden_changes(track, bounds, skip=skip),
+            "frame_s": round(float(np.median(np.diff(ts))), 4) if len(ts) > 1 else 0.04}
+
+
+def _measured_lines(m: dict | None, t0: float = 0.0, t1: float = 1e9) -> dict:
+    m = m or {}
+    return {"cuts": [f"{c:.2f} 剪辑点" for c in m.get("cuts") or [] if t0 <= c <= t1],
+            "sudden": [f"{x['t']:.2f} 局部突变，区域 {','.join(f'{v:.2f}' for v in x['box'])}，占画面 {x['area']:.1%}，前后没有剪断"
+                       for x in m.get("sudden") or [] if t0 <= x["t"] <= t1]}
+
+
+def shown_guess(ex: dict) -> str:
+    """The guess as a viewer reads it: an unsettled one says so on the diagram and in the clip."""
+    g = ex.get("guess") or ""
+    return T("待确认｜", "To confirm | ") + g if g and ex.get("doubts") else g
+
+
+_NEG_CUT = re.compile(
+    r"(?:没有?|无|未|并非|不是|不靠|零)\s*(?:剪辑|切镜|跳切|跳剪|转场|剪断|剪了?一刀|切了?一刀|拼接)|一镜到底"
+    r"|\b(?:no|without(?:\s+a)?|not\s+a)\s+(?:cut|jump[\s-]?cut|edit)\b", re.I,
+)
+CUT_WORDS = re.compile(
+    r"剪辑|跳切|跳剪|切镜|硬切|暗切|藏剪|剪断|转场|剪了?一刀|切了?一刀|剪掉|剪去|拼接"
+    r"|\bjump[\s-]?cut\b|\bhard\s+cut\b|\bhidden\s+cut\b|\bcut\s+(?:away|to|here|at|between|out)\b|\bedit(?:ed|ing)?\b", re.I,
+)
+
+
+def _claims_cut(text: str) -> bool:
+    return bool(CUT_WORDS.search(_NEG_CUT.sub(" ", text or "")))
+
+
+def check_explain(ex: dict, m: dict | None) -> list[str]:
+    """Why an explanation is not settled: nobody checked the frame before the change, the reader is not sure, or it
+    disagrees with the measured cuts. The answer stays, marked as to be confirmed."""
+    doubts = []
+    claim = " ".join(str(ex.get(k) or "") for k in ("guess", "why"))
+    if not ex.get("before"):
+        doubts.append(T("没有核对变化前一帧", "the frame before the change was not checked"))
+    if ex.get("sure") != "seen":
+        doubts.append({"likely": T("手法没有直接看到", "the method is not directly visible"),
+                       "unknown": T("说不清怎么做到的", "how it is done is unclear")}.get(ex.get("sure"), T("没有说明把握", "no confidence given")))
+    key = next((s["t"] for s in ex.get("steps") or [] if s.get("key")), None)
+    if m and key is not None and m.get("cuts") is not None:
+        near = 1.5 * float(m.get("frame_s") or 0.04)
+        at_cut = any(abs(c - key) <= near for c in m["cuts"])
+        says_cut = _claims_cut(claim)
+        if says_cut and not any(abs(c - key) <= max(near, 0.25) for c in m["cuts"]):
+            doubts.append(T("解释说这里有剪辑，但逐帧没量到剪辑点", "the explanation says there is a cut here, but none was measured"))
+        elif at_cut and not says_cut:
+            doubts.append(T("这一帧量到了剪辑点，解释没有提", "a cut was measured at this frame and the explanation does not mention it"))
+    return doubts
+
+
 def genre(b: dict) -> str:
     """"magic" when the title, the words or the VLM say so; "drama" for a story; else ""."""
     src = b.get("source") or {}
@@ -311,7 +420,8 @@ def _yes(v) -> tuple[bool, float]:
 def _tile_w(info, look: str, area: float | None = None) -> int:
     import math
 
-    aspect = info.width / info.height if info.width and info.height else 16 / 9
+    dw, dh = info.display_size if hasattr(info, "display_size") else (info.width, info.height)
+    aspect = dw / dh if dw and dh else 16 / 9
     return max(40, int(round(math.sqrt((area or TILE_AREA[look]) * aspect))))
 
 
@@ -422,6 +532,7 @@ def find_task(b: dict, out: Path, info) -> dict:
     state = {"video": video, "zoom_cmd": _zoom_cmd(video, out), "duration": round(dur, 2), "genre": g or None, "lines": _lines_text((b.get("speech") or {}).get("lines")),
              "screen_text": _screen_text(b),
              "hints": [f"{h['t']:.1f} {'、'.join(h['why'])}" for h in (b.get("moments") or {}).get("hints") or []],
+             "measured": _measured_lines((b.get("moments") or {}).get("measured")),
              **({"summary": w["summary"]} if w.get("summary") else {}),
              "overview": "格子按画面变化抽：动得多的地方密、静止的地方稀（几乎一样的帧合并了），左上角是秒数"}
     instr = FIND_INSTRUCTIONS.replace("<FOCUS>", FOCUS.get(g, FOCUS[""])).replace("<MAX>", str(MAX_MOMENTS))
@@ -475,12 +586,13 @@ def explain_task(b: dict, out: Path, info, items: list[dict]) -> dict:
         blocks.append((f"{it['id']} {it['kind']}  {fmt_time(t0)} – {fmt_time(t1)}", times, [f"{j:02d} {t:.2f}" for j, t in enumerate(times)]))
         state[it["id"]] = {"kind": it["kind"], "what": it.get("what", ""), "how": it.get("how", ""),
                            "frames": {r: fr[r] for r in ROLES if r in fr}, "times": times,
+                           "measured": _measured_lines((b.get("moments") or {}).get("measured"), t0, t1),
                            "lines": _lines_text(lines, t0 - 1.0, t1 + 1.0), "screen_text": _screen_text(b, t0 - 1.0, t1 + 1.0, cap=20)}
     images = _blocks_sheets(video, info, blocks, "explain", out, "explain")
     return {"id": "explain", "images": images, "instructions": EXPLAIN_INSTRUCTIONS,
             "state": {"video": video, "zoom_cmd": _zoom_cmd(video, out), "grid_cmd": _grid_cmd(video, out), **state},
-            "questions": {"per": "moment", "fields": ["steps", "frames", "focus", "what", "seen", "guess", "why"]},
-            "answer_template": {"filled": True, **{it["id"]: {"steps": [], "frames": "", "focus": "", "what": "", "seen": "", "guess": "", "why": ""}
+            "questions": {"per": "moment", "fields": ["steps", "frames", "focus", "what", "seen", "before", "guess", "sure", "why"]},
+            "answer_template": {"filled": True, **{it["id"]: {"steps": [], "frames": "", "focus": "", "what": "", "seen": "", "before": "", "guess": "", "sure": "", "why": ""}
                                                 for it in items}}}
 
 
@@ -550,7 +662,7 @@ def _window(v, dur: float) -> list[float] | None:
     return [round(a, 3), round(z, 3)]
 
 
-def apply_explain(it: dict, a: dict, dur: float) -> None:
+def apply_explain(it: dict, a: dict, dur: float, m: dict | None = None) -> None:
     """The reader's steps onto a moment; a key step moves the change to it (a closer look than the pin rounds)."""
     steps = parse_steps((a or {}).get("steps"), dur)
     if not steps:
@@ -561,9 +673,16 @@ def apply_explain(it: dict, a: dict, dur: float) -> None:
     win = _window(a.get("frames"), dur)
     if win:
         ex["frames"] = win
-    for k in ("seen", "guess", "why"):
+    for k in ("seen", "before", "guess", "why"):
         if str(a.get(k) or "").strip():
             ex[k] = str(a[k]).strip()[:120]
+    sure = str(a.get("sure") or "").strip().lower()
+    if sure in SURE:
+        ex["sure"] = sure
+    if it.get("kind") in (None, "reveal", "goof") or any(ex.get(k) for k in ("guess", "before", "sure")):
+        doubts = check_explain(ex, m)
+        if doubts:
+            ex["doubts"] = doubts
     if str(a.get("what") or "").strip():
         it["what"] = str(a["what"]).strip()[:200]
     it["explain"] = ex
@@ -683,6 +802,7 @@ def run(b: dict, out: Path, asker=None) -> dict:
     the waiting answer files are returned for an agent to fill, then this runs again.
     -> {"status": "done" | "waiting", ...}; when done, b["moments"]["items"] holds the moments."""
     from .media import video_info
+    import shutil
 
     out = Path(out)
     video = b["source"]["path"]
@@ -694,7 +814,9 @@ def run(b: dict, out: Path, asker=None) -> dict:
     src = {"sha256_head": b["source"].get("sha256_head"), "version": VERSION}
     if meta.get("source") != src:
         for p in (out / "moments" / "look").glob("*") if (out / "moments" / "look").is_dir() else []:
-            p.unlink()
+            shutil.rmtree(p) if p.is_dir() else p.unlink()
+        mo.pop("items", None)
+        mo["status"] = "pending"
         meta = {"source": src, "rounds": []}
 
     def step(task: dict) -> dict | None:
@@ -707,6 +829,8 @@ def run(b: dict, out: Path, asker=None) -> dict:
         return got
 
     def waiting(task: dict) -> dict:
+        mo.pop("items", None)
+        mo["status"] = "pending"
         tp, ap = _paths(out, task["id"])
         return {"status": "waiting", "stage": task["id"], "tasks": [str(tp)], "waiting": [str(ap)],
                 "images": [str(out / im) for im in task["images"]]}
@@ -825,7 +949,7 @@ def run(b: dict, out: Path, asker=None) -> dict:
         for it in items:
             a = ans.get(it["id"])
             if isinstance(a, dict):
-                apply_explain(it, a, dur)
+                apply_explain(it, a, dur, mo.get("measured"))
     mo.update(items=items, looked_by=by, status="done")
     write_json(meta_p, meta)
     return {"status": "done", "moments": len(items)}
@@ -836,6 +960,9 @@ def run(b: dict, out: Path, asker=None) -> dict:
 def export(b: dict, out: Path) -> None:
     """Per moment: a clip with sound, the key frames full size and one picture (moments/M1.jpg): the numbered step
     diagram when the moment was explained, else a strip of the key frames; plus the reveal clip (moments/M1_reveal.mp4)."""
+    import hashlib
+
+    from .i18n import lang
     from .media import cut_clip, extract_frame
     from . import reveal
 
@@ -848,7 +975,12 @@ def export(b: dict, out: Path) -> None:
         return
     d = out / "moments"
     d.mkdir(parents=True, exist_ok=True)
-    w = min(1080, int(b["source"].get("width") or 1080))
+    rot = b["source"].get("rotation") in (90, 270)
+    sw0, sh0 = int(b["source"].get("width") or 0), int(b["source"].get("height") or 0)
+    sw, sh = (sh0, sw0) if rot else (sw0, sh0)
+    w = min(1080, sw or 1080)
+    sig_p = d / ".export.json"
+    sigs = read_json(sig_p) if sig_p.is_file() else {}
     for it in items:
         files = {}
         for r, t in it["frames"].items():
@@ -866,54 +998,61 @@ def export(b: dict, out: Path) -> None:
         strip = d / f"{it['id']}.jpg"
         ex = it.get("explain") or {}
         rv = None
+        sl = None
         strip.unlink(missing_ok=True)
         if ex.get("steps"):
-            sw, sh = int(b["source"].get("width") or 0), int(b["source"].get("height") or 0)
             box = reveal.zoom_box(ex.get("focus"), [tuple(s["at"]) for s in ex["steps"] if s.get("at") and not s.get("whole")], sw, sh) if sw and sh else None
-            if box:  # a ring outside the zoom would be drawn off the picture: drop it
+            steps = [dict(s) for s in ex["steps"]]
+            if box:  # a ring outside the zoom would be drawn off the picture: drop it on the copy only
                 bx = (box[0] / sw, box[1] / sh, (box[0] + box[2]) / sw, (box[1] + box[3]) / sh)
-                for s in ex["steps"]:
+                for s in steps:
                     if s.get("at") and not s.get("whole") and not (bx[0] <= s["at"][0] <= bx[2] and bx[1] <= s["at"][1] <= bx[3]):
                         s.pop("at")
-            notes = [(k, T(lbl, en) + ex[k]) for k, lbl, en in (("seen", "看得到的：", "Seen: "), ("guess", "看不到的：", "Not on screen: "),
+            notes = [(k, T(lbl, en) + (shown_guess(ex) if k == "guess" else ex[k])) for k, lbl, en in (("seen", "看得到的：", "Seen: "), ("guess", "看不到的：", "Not on screen: "),
                                                                  ("why", "为什么没发现：", "Why it's missed: ")) if ex.get(k)]
             title = f"{it['id']} · {KIND.get(it['kind'], it['kind'])}" + (f" · {it['what'][:60]}" if it.get("what") else "")
-            sub = T("{a}–{b}，{z}红圈 = 该看的地方", "{a}–{b}, {z}red ring = where to look", a=fmt_time(ex["steps"][0]["t"])[:-2],
-                    b=fmt_time(ex["steps"][-1]["t"])[:-2], z=T("局部放大；", "zoomed; ") if box else "")
-            kt = next((s["t"] for s in ex["steps"] if s.get("key")), None)
+            sub = T("{a}–{b}，{z}红圈 = 该看的地方", "{a}–{b}, {z}red ring = where to look", a=fmt_time(steps[0]["t"])[:-2],
+                    b=fmt_time(steps[-1]["t"])[:-2], z=T("局部放大；", "zoomed; ") if box else "")
+            kt = next((s["t"] for s in steps if s.get("key")), None)
             fps = float(b["source"].get("fps") or 30)
             win = ex.get("frames") or ([max(0.0, kt - reveal.SEQ_DEFAULT[0]), kt + reveal.SEQ_DEFAULT[1]] if kt is not None else None)
             seq = reveal.seq_times(win[0], win[1], fps, kt) if win else []
             step_ms = round((seq[1] - seq[0]) * 1000) if len(seq) > 1 else 0
             seq_title = T("逐帧过程 {a:.2f}–{z:.2f}s（每格间隔约 {ms} 毫秒{k}；前后灰色格是变化前后的样子）", "Frame by frame {a:.2f}–{z:.2f}s (about {ms} ms apart{k}; grey tiles: before and after)",
                           a=win[0], z=win[1], ms=step_ms, k=T("，红框是关键一帧", ", key frame in red") if kt is not None else "") if seq else ""
-            reveal.diagram(video, ex["steps"], box, title, sub, notes, strip, seq=seq, seq_title=seq_title, key=kt,
+            reveal.diagram(video, steps, box, title, sub, notes, strip, seq=seq, seq_title=seq_title, key=kt,
                            seq_labels=(T("前 ", "before "), T("后 ", "after ")))
             kt = kt if kt is not None else it["t"]
+            sig = hashlib.sha1(json.dumps([lang(), sw, sh, box, steps, shown_guess(ex), win], ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+            fresh = sigs.get(it["id"]) == sig
             rp = d / (f"{it['id']}_reveal_{kt:.2f}s" + (f"_{win[0]:.2f}-{win[1]:.2f}" if ex.get("frames") else "") + ".mp4")
+            if not fresh:
+                rp.unlink(missing_ok=True)
             try:
                 rv = rp if rp.is_file() else reveal.reveal_clip(
-                    video, bool(b["source"].get("has_audio")), (sw, sh), float(b["source"]["duration"]), tuple(it["span"]), ex["steps"],
-                    box, ex.get("guess", ""), rp, {"speed": T("原速", "Speed"), "slow": T("慢放 1/{n}", "Slow 1/{n}"),
+                    video, bool(b["source"].get("has_audio")), (sw, sh), float(b["source"]["duration"]), tuple(it["span"]), steps,
+                    box, shown_guess(ex), rp, {"speed": T("原速", "Speed"), "slow": T("慢放 1/{n}", "Slow 1/{n}"),
                                                    "hold": T("定格 {t:.2f}s", "Hold {t:.2f}s"), "react": T("反应", "Reaction")},
                     window=tuple(ex["frames"]) if ex.get("frames") else None)
             except Exception:  # noqa: BLE001  the diagram and the plain clip still stand
                 rv = None
-        sl = None
-        if ex.get("steps") and sw and sh:
-            win_s = ex.get("frames") or ([max(0.0, kt - reveal.SEQ_DEFAULT[0]), kt + reveal.SEQ_DEFAULT[1]] if kt is not None else None)
-            if win_s:
-                sp = d / f"{it['id']}_slow_{win_s[0]:.2f}-{win_s[1]:.2f}.mp4"
-                key_step = next((s for s in ex["steps"] if s.get("key")), None)
-                try:
-                    sl = sp if sp.is_file() else reveal.slow_clip(
-                        video, (sw, sh), float(b["source"]["duration"]), fps, tuple(win_s), kt, box,
-                        tuple(key_step["at"]) if key_step and key_step.get("at") else None, sp,
-                        {"slow": T("逐帧慢放 {i}/{n}", "Frame by frame {i}/{n}"), "pre": T("慢放 · 之前", "Slow · before"),
-                         "post": T("慢放 · 之后", "Slow · after"),
-                         "key": key_step["text"] if key_step else ""})
-                except Exception:  # noqa: BLE001
-                    sl = None
+            if sw and sh:
+                win_s = ex.get("frames") or ([max(0.0, kt - reveal.SEQ_DEFAULT[0]), kt + reveal.SEQ_DEFAULT[1]] if kt is not None else None)
+                if win_s:
+                    sp = d / f"{it['id']}_slow_{win_s[0]:.2f}-{win_s[1]:.2f}.mp4"
+                    if not fresh:
+                        sp.unlink(missing_ok=True)
+                    key_step = next((s for s in steps if s.get("key")), None)
+                    try:
+                        sl = sp if sp.is_file() else reveal.slow_clip(
+                            video, (sw, sh), float(b["source"]["duration"]), fps, tuple(win_s), kt, box,
+                            tuple(key_step["at"]) if key_step and key_step.get("at") else None, sp,
+                            {"slow": T("逐帧慢放 {i}/{n}", "Frame by frame {i}/{n}"), "pre": T("慢放 · 之前", "Slow · before"),
+                             "post": T("慢放 · 之后", "Slow · after"),
+                             "key": key_step["text"] if key_step else ""})
+                    except Exception:  # noqa: BLE001
+                        sl = None
+            sigs[it["id"]] = sig
         if not strip.is_file():
             _strip([(d / files[r], ROLE[r], it["frames"][r]) for r in ROLES if r in files], strip)
         it["files"] = {"frames": files, "strip": f"moments/{strip.name}", **({"clip": f"moments/{clip.name}"} if clip else {}),
@@ -922,6 +1061,7 @@ def export(b: dict, out: Path) -> None:
         for p in d.glob(f"{it['id']}_*"):  # files of an earlier answer (other times) go
             if p.name not in keep:
                 p.unlink()
+    write_json(sig_p, sigs)
 
 
 def _strip(cells: list[tuple[Path, str, float]], out: Path, h: int = 360) -> None:
@@ -977,9 +1117,12 @@ def report_md(b: dict) -> list[str]:
             L.append(T("- **发生了什么**：{x}", "- **What happens**: {x}", x=it["what"]))
         for j, st in enumerate(ex.get("steps") or [], start=1):
             L.append(f"  {j}. {st['t']:g}s {'**' + st['text'] + '**' if st.get('key') else st['text']}")
-        for k, zh, en in (("seen", "看得到的", "Seen"), ("guess", "看不到的", "Not on screen"), ("why", "为什么没发现", "Why it's missed")):
+        for k, zh, en in (("seen", "看得到的", "Seen"), ("before", "变化前一帧", "The frame before"), ("guess", "看不到的", "Not on screen"),
+                          ("why", "为什么没发现", "Why it's missed")):
             if ex.get(k):
-                L.append(f"- **{T(zh, en)}**{T('：', ': ')}{ex[k]}")
+                L.append(f"- **{T(zh, en)}**{T('：', ': ')}{shown_guess(ex) if k == 'guess' else ex[k]}")
+        if ex.get("doubts"):
+            L.append(T("- **⚠ 手法待确认**：", "- **⚠ Method to confirm**: ") + T("；", "; ").join(ex["doubts"]))
         if it.get("how") and not ex.get("guess"):
             L.append(T("- **怎么做到的 / 细节**：{x}", "- **How / detail**: {x}", x=it["how"]))
         L.append(T("- **关键帧**：", "- **Key frames**: ") + T("，", ", ").join(f"{ROLE[r]} {it['frames'][r]:.1f}s" for r in ROLES if r in it["frames"])
@@ -1012,7 +1155,8 @@ def videomd(b: dict) -> list[str]:
             ex = it.get("explain") or {}
             if ex.get("steps"):
                 L.append("  - steps: " + (f"frames {ex['frames'][0]:.2f}-{ex['frames'][1]:.2f} | " if ex.get("frames") else "") + "; ".join(("*" if s.get("key") else "") + f"{s['t']:.1f} {s['text']}" for s in ex["steps"])
-                         + "".join(f" | {k}~ {ex[k]}" if k == "guess" else f" | {k}: {ex[k]}" for k in ("seen", "guess", "why") if ex.get(k)))
+                         + "".join(f" | {k}~ {ex[k]}" if k == "guess" else f" | {k}: {ex[k]}" for k in ("seen", "before", "guess", "why") if ex.get(k))
+                         + (" | to_confirm: " + "; ".join(ex["doubts"]) if ex.get("doubts") else ""))
         return L
     if mo.get("status") == "done":
         return ["## " + T("特殊时刻", "Special moments"), "", T("- 看过了，没有找到特殊时刻", "- Looked: no special moments found")]

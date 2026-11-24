@@ -18,14 +18,15 @@ from .media import cut_clip, extract_frame, extract_frames, require_tools, video
 from .overlay import ocr_frames, persistent_template, shot_ocr_frames, shot_ocr_items, static_overlays, summarize_text
 from .plan import Planner
 from .probe import provenance
+from .readings import shot_description, shot_overlay_text  # noqa: F401
 from .motion import element_crops, motion_events, palette, strip_frames
 from .shots import build_track, detect_shots
-from .util import LOG, fmt_time, round_floats, write_json, read_image
+from .util import LOG, fmt_time, read_image, read_json, round_floats, write_json
 from . import aspects
-from .faces import shot_faces
+from .faces import MIN_AREA, shot_faces
 from .visual import LABEL_SHORT, shot_sheet, storyboard
 from .i18n import T, join, semi, set_lang
-from .vlm import SHOT_PROMPT, SILENT_NOTE, SOUND_NOTE, TAKE_NOTE, WHOLE_PROMPT, VLMClient, VLMConfig, normalize_shot_result, normalize_whole, prompt_lang_note, shot_hints, take_results, vlm_note
+from .vlm import make_client, SHOT_PROMPT, SILENT_NOTE, SOUND_NOTE, TAKE_NOTE, WHOLE_PROMPT, normalize_shot_result, normalize_whole, prompt_lang_note, shot_hints, take_results, vlm_note
 
 
 def _sha256_head(path: Path, limit: int = 64 << 20) -> str:
@@ -63,7 +64,7 @@ def vlm_units(records: list[dict], max_calls: int) -> list[list[dict]]:
 
 # modules that only run in finalize(): a change there needs no new decode. Everything else measures the video.
 _FINALIZE_ONLY = {"classify.py", "report.py", "plan.py", "production.py", "entities.py", "narrative.py", "review.py", "cli.py",
-                  "evaluate.py", "remake.py", "memory.py", "i18n.py", "visual.py", "sound_source.py", "__init__.py"}
+                  "evaluate.py", "remake.py", "memory.py", "i18n.py", "visual.py", "readings.py", "__init__.py"}
 _DECODE_FP: str | None = None
 
 
@@ -145,10 +146,9 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
 
     timeline = load_timeline(out, video, info)
     vlm_client = None  # one client for the survey and the shot pass: a model found down stays skipped
-    if timeline is None and use_vlm and survey:
-        cfg = VLMConfig.from_env()
-        if cfg is not None:
-            vlm_client = VLMClient(cfg, out / "vlm_cache")
+    if (timeline is None or "keyframes" not in timeline) and use_vlm and survey:
+        vlm_client = make_client(out / "vlm_cache")
+        if vlm_client is not None:
             try:
                 got = run_survey(video, out, track, shots, info, asker=vlm_asker(vlm_client, prompt_lang_note()), workers=workers)
                 LOG.info("survey: %s", {k: got.get(k) for k in ("status", "rounds", "shots", "keyframes")})
@@ -262,7 +262,7 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
         pic = [crop_box(f, lbox["box"]) for f in smp.frames] if lbox else smp.frames
         fd = shot_faces(pic)
         faces = fd["presence"]
-        areas = [p["face"]["area"] for p in fd["frames"] if p.get("face")]
+        areas = [p["face"]["area"] for p in fd["frames"] if p.get("face") and p["face"]["area"] >= MIN_AREA]
         feats["face_presence"] = faces
         feats["face_area"] = float(np.median(areas)) if areas else 0.0
         asp = aspects.measure_shot(pic, fd, feats, s.duration)
@@ -316,25 +316,32 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
         stills_job.result()
     decode_pool.shutdown()
 
+    # compute whole-video transcode context before selecting VLM units and formatting hints
+    vctx0 = video_context(shot_records, prov, info.fps)
+    for rec in shot_records:
+        probs0, ev0, facts0 = deterministic(rec["features"], rec.get("overlay"), rec.get("text"), rec.get("faces", 0.0),
+                                            audio, prov, fps=info.fps, ctx=vctx0)
+        rec["deterministic"] = {"probs": round_floats(probs0), "evidence": ev0, "facts": facts0}
+
     # ---------------- VLM pass ------------------------------------------------------
     # "used" means at least one VLM answer actually came back; "status" says why not otherwise.
     vlm_info = {"used": False, "requested": use_vlm, "status": "off"}
     whole = None
     if use_vlm:
-        cfg = VLMConfig.from_env()
-        if cfg is None:
-            LOG.warning("--vlm requested but no VLM config found (REA_VLM_* / VIDEO_ANALYSIS_* / GEMINI3_*); continuing without it")
+        vlm_client = vlm_client or make_client(out / "vlm_cache")
+        if vlm_client is None:
+            LOG.warning("--vlm requested but no VLM config found (GEMINI_API_KEY / REA_VLM_*); continuing without it")
             vlm_info = {"used": False, "requested": True, "status": "not_configured", "error": "no_config"}
         else:
-            client = vlm_client = vlm_client or VLMClient(cfg, out / "vlm_cache")
-            vlm_info = {"used": False, "requested": True, "status": "failed", "model": cfg.describe(), "media": cfg.media, "errors": []}
+            client = vlm_client
+            vlm_info = {"used": False, "requested": True, "status": "failed", "model": client.describe(), "media": client.media, "errors": []}
 
             def run_unit(unit: list[dict]) -> None:
                 """One VLM call per unit: a single shot, or the jump-cut pieces of one take seen as one clip."""
                 first, last = unit[0], unit[-1]
                 span = last["end"] - first["start"]
                 media = []
-                if cfg.media in ("both", "frames"):
+                if client.media in ("both", "frames"):
                     mid = unit[len(unit) // 2]
                     media += [(out / first["assets"]["first_frame"], "image/jpeg"), (out / mid["assets"]["sheet"], "image/jpeg"),
                               (out / last["assets"]["last_frame"], "image/jpeg")]
@@ -344,18 +351,18 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
                 if len(unit) > 1:
                     prompt += TAKE_NOTE.format(n=len(unit), cuts=", ".join(f"{r['start'] - first['start']:.2f}" for r in unit[1:]))
                 spoken = speaks_in(audio, first["start"], first["start"] + min(span, 12.0))
-                if cfg.media in ("both", "video"):
+                if client.media in ("both", "video"):
                     prompt += SOUND_NOTE if spoken else SILENT_NOTE
                 prompt += prompt_lang_note()
                 fallback = None
                 try:
-                    if cfg.media in ("both", "video"):  # a clip that fails to encode costs this unit its video, not the run
+                    if client.media in ("both", "video"):  # a clip that fails to encode costs this unit its video, not the run
                         clip = cut_clip(video, first["start"], min(span, 12.0), out / "clips" / f"{first['id']}.mp4", width=480, audio=spoken)
                         media.insert(0, (clip, "video/mp4"))
                     raw = client.ask_json(prompt, media)
                 except Exception as exc:  # keep going; deterministic result stands
                     raw = None
-                    if spoken and cfg.media in ("both", "video"):  # an endpoint that refuses a clip with sound still gets the picture
+                    if spoken and client.media in ("both", "video"):  # an endpoint that refuses a clip with sound still gets the picture
                         try:
                             clip = cut_clip(video, first["start"], min(span, 12.0), out / "clips" / f"{first['id']}_mute.mp4", width=480)
                             raw = client.ask_json(prompt.replace(SOUND_NOTE, SILENT_NOTE.replace("这一段没检测到人声，", "")),
@@ -363,7 +370,7 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
                             fallback = "mute_clip"
                         except Exception as exc2:  # noqa: BLE001
                             exc = exc2
-                    if raw is None and cfg.media == "both":
+                    if raw is None and client.media == "both":
                         try:
                             raw = client.ask_json(prompt, [m for m in media if m[1] != "video/mp4"])
                             fallback = "frames_only"
@@ -380,9 +387,12 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
                     if len(unit) > 1:
                         rec["vlm"]["take"] = {"shots": [r["index"] for r in unit], "piece": i + 1}
 
+            import contextvars
+
             units = vlm_units(shot_records, max_shots_vlm)
             with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-                list(pool.map(run_unit, units))
+                for fut in [pool.submit(contextvars.copy_context().run, run_unit, u) for u in units]:
+                    fut.result()
             if whole_vlm:
                 try:
                     low = cut_clip(video, 0, info.duration, out / "clips" / "whole_480p.mp4", width=480, audio=True, crf=30)
@@ -499,8 +509,12 @@ def _moments(b: dict, out: Path, track, stem_info: dict, client) -> None:
 
     try:
         voc = Path(stem_info["vocals"]) if stem_info.get("ok") else None
+        fps = float(b["source"].get("fps") or (track.fps if track else 30.0))
+        skips = [(int(round(s["transition"]["start"] * fps)), int(round(s["transition"]["end"] * fps)))
+                 for s in (b.get("shots") or [])[1:] if s.get("transition")]
         b["moments"] = {"genre": mo.genre(b), "status": "pending",
-                        "hints": mo.hints((b.get("speech") or {}).get("lines") or [], voc, track, b["source"]["duration"])}
+                        "hints": mo.hints((b.get("speech") or {}).get("lines") or [], voc, track, b["source"]["duration"]),
+                        "measured": mo.measured(track, [s["start_frame"] for s in (b.get("shots") or [])[1:]], skip=skips)}
         if client is not None:
             from .vlm import prompt_lang_note
 
@@ -524,7 +538,9 @@ def _ai_or_live_doubt(label: str, facts: dict, prov: dict, vctx: dict, seen_live
     native-30fps camera signature (live). Without them, cap the confidence and say why.
     24fps-source pulldown alone is not decisive: AI video, stop motion and cinema cameras all produce it.
     seen_live: how strongly the image readers (VLM / agent) think the shot was filmed."""
-    if label not in ("ai_video", "live_action") or prov.get("aigc"):
+    aigc = prov.get("aigc")
+    has_aigc = (aigc.get("label") in ("1", "2", "3")) if isinstance(aigc, dict) else bool(aigc)
+    if label not in ("ai_video", "live_action") or has_aigc:
         return None
     hints = facts.get("film_hints") or []
     if hints and not seen:
@@ -601,7 +617,17 @@ def visual_opinion(rec: dict) -> dict | None:
         return v or a
     merged = dict(v)
     merged["label_probs"] = {k: (v["label_probs"].get(k, 0.0) + a["label_probs"].get(k, 0.0)) / 2 for k in LABEL_ZH}
-    merged["embedded_assets"] = (v.get("embedded_assets") or []) + (a.get("embedded_assets") or [])
+    if a.get("image_source") and a["image_source"] != "unknown":
+        merged["image_source"] = a["image_source"]
+    if a.get("generator_guess"):
+        merged["generator_guess"] = a["generator_guess"]
+    if a.get("description"):
+        merged["description"] = a["description"]
+    seen_assets = list(v.get("embedded_assets") or [])
+    for e in a.get("embedded_assets") or []:
+        if not any(x.get("kind") == e.get("kind") and x.get("description") == e.get("description") for x in seen_assets):
+            seen_assets.append(e)
+    merged["embedded_assets"] = seen_assets
     return merged
 
 
@@ -639,7 +665,7 @@ def _label_at(shots: list[dict], t: float) -> str | None:
     return (r.get("base") or {}).get("label") if r else None
 
 
-def _vlm_gate(rec: dict, vprobs: dict | None, vctx: dict) -> dict | None:
+def _vlm_gate(rec: dict, vprobs: dict | None, vctx: dict, prov: dict | None = None) -> dict | None:
     """When only one image reader answered (the VLM, or an agent review, not both), let it decide only where
     image readers have proved reliable. Measured on eval/articles + holdout + holdout2: they fix 3D vs
     code-render vs screen-capture confusions, but on the AI / live-action / avatar axis they are confidently
@@ -659,7 +685,7 @@ def _vlm_gate(rec: dict, vprobs: dict | None, vctx: dict) -> dict | None:
     rendered_top = d not in AI_LIVE_AXIS or ranked[1][0] not in AI_LIVE_AXIS
     person = (v in AI_LIVE_AXIS and rendered_top
               and bool(facts.get("big_face") or facts.get("lowlight") or facts.get("face_area", 0) >= RULES["big_face"]["area"]))
-    if v in UNMEASURED:  # 2D animation / stop motion: the tools cannot score them, so they cannot back them either
+    if v in UNMEASURED and ((prov or {}).get("aigc") or {}).get("label") != "1":  # 2D animation / stop motion: the tools cannot score them, unless an explicit AIGC=1 label rules out film footage
         return vprobs
     # the survey's closer look is the only reader, and it saw this shot among its neighbours (a sheet's usual look,
     # shots that differ marked): where the tools hold no hard evidence (no repeated frames; not sure either, as an
@@ -745,10 +771,11 @@ def _agent_review_dispute(dt: str, vt: dict | None, rv: dict | None, reviewed: b
     Mirrors the VLM disputed flag above."""
     if decided == "user" or vt or not rv or sum(rv.values()) == 0 or reviewed:
         return None
-    if (group_of(_top_group_label(rv)) == "live_action") != (group_of(dt) == "live_action"):
+    rg = _top_group_label(rv)
+    if (rg in AI_LIVE_AXIS or dt in AI_LIVE_AXIS) and group_of(rg) != group_of(dt):
         return T("工具判{d}、看图复核判{r}，融合规则在 AI/实拍轴上跟了工具（评测校准）：请对照截图核实复核证据是否真的看得见",
                  "Tools say {d}, the image review says {r}; on the AI / live-action axis the fusion follows the tools (eval-calibrated): check the frames to see whether the review's evidence is really visible",
-                 d=LABEL_ZH[dt], r=LABEL_ZH[_top_group_label(rv)])
+                 d=LABEL_ZH[dt], r=LABEL_ZH[rg])
     return None
 
 
@@ -806,7 +833,7 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
     for rec in shot_records:
         fam = rec["deterministic"]["facts"].get("temporal_family", "dynamic")
         seen = visual_opinion(rec) or {}
-        vprobs = _vlm_gate(rec, seen.get("label_probs"), vctx)
+        vprobs = _vlm_gate(rec, seen.get("label_probs"), vctx, prov=prov)
         probs = fuse(rec["deterministic"]["probs"], vprobs, fam, majority=_majority(rec))
         # group-first decision only when an image reader voted: the tools' avatar score is a slice of their AI score,
         # so adding the two would outvote live action on tool-only runs (eval/koubo night street 0.51 -> 0.33)
@@ -873,8 +900,7 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
         if doubt:
             rec["base"]["confidence"] = round(min(conf, DOUBT_CAP), 3)
             rec["base"]["uncertain"] = doubt
-        said = (rec.get("vlm") or {}).get("overlay_text")
-        said = said if isinstance(said, list) else (rec.get("review") or {}).get("overlay_text")
+        said = shot_overlay_text(rec)
         rec["layers"], scene_text = drop_scene_text(rec["layers"], label, said)
         if scene_text:
             rec["base"]["scene_text"] = scene_text  # read by OCR but printed on things in the scene, not overlays
@@ -990,6 +1016,13 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
             refs.setdefault(k, []).append(r["index"])
     if refs:
         verdict += semi() + T("复刻需准备参考：", "references to prepare for the remake: ") + join(T("{k}（{n} 镜）", "{k} ({n} shots)", k=k, n=len(v)) for k, v in sorted(refs.items(), key=lambda kv: -len(kv[1])))
+    st_lv = ((breakdown.get("stems") or {}).get("level_db") or {})
+    mus = audio.get("music") or {}
+    if mus.get("present") and st_lv.get("music") is not None and st_lv["music"] <= MUSIC_STEM_SILENT_DB:
+        # the separated accompaniment is near silent: the "beat" was measured on voice and room sound in the mix
+        audio["music"] = {**mus, "present": False, "dropped_by_stems": st_lv["music"]}
+        audio["music_likely"] = False
+        audio["beat_synced_edit"] = False
     if audio.get("beat_synced_edit"):
         verdict += semi() + T("剪辑卡在音乐节拍上", "cuts land on the music beat")
     summary = {
@@ -1042,12 +1075,6 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
         if rec["index"] in told:
             rec["narrative"] = told[rec["index"]]
     breakdown["narrative"] = narrative.beats(breakdown)
-
-    st_lv = ((breakdown.get("stems") or {}).get("level_db") or {})
-    mus = audio.get("music") or {}
-    if mus.get("present") and st_lv.get("music") is not None and st_lv["music"] <= MUSIC_STEM_SILENT_DB:
-        # the separated accompaniment is near silent: the "beat" was measured on voice and room sound in the mix
-        audio["music"] = {**mus, "present": False, "dropped_by_stems": st_lv["music"]}
     fx = Path(out) / "stems" / "effects.wav"
     if fx.is_file():  # effects found on their own separated track replace the onsets picked off the mix
         from .effects import detect as detect_effects
@@ -1167,13 +1194,25 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
             export_moments(breakdown, out)
         except Exception as exc:  # noqa: BLE001
             LOG.warning("special moments export failed: %s", str(exc)[:160])
-    write_json(out / "breakdown.json", breakdown, compact=True)
-    from .report import write_reports
+    code_idx = sorted(r["index"] for r in shot_records if r["base"]["label"] == "code_render")
+    src_path = (breakdown.get("source") or {}).get("path", "")
+    if code_idx and src_path and Path(src_path).is_file():
+        from .layers import scene_frames
 
+        sc_file = out / "frames" / "scenes.json"
+        have_idx = sorted({sc.get("shot") for sc in read_json(sc_file).get("scenes", [])}) if sc_file.is_file() else None
+        if have_idx != code_idx:
+            try:
+                sc = scene_frames(out, breakdown=breakdown)
+                breakdown["layer_scenes"] = {"file": "frames/scenes.json", "count": len(sc["scenes"])}
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("scene frames skipped (%s: %s)", type(exc).__name__, exc)
+    from .report import write_reports
     from .stems import cut_sfx
 
     plan_a = breakdown.get("audio_plan") or {}
-    cut_sfx(breakdown["source"].get("path", ""), plan_a.get("sfx_merged", []), out,
-            groups=[g for g in plan_a.get("sfx_groups") or [] if not g.get("in_scene")] if plan_a.get("sfx_groups") else None)
+    cut_sfx(src_path, plan_a.get("sfx_merged", []), out,
+            groups=[g for g in plan_a["sfx_groups"] if not g.get("in_scene")] if "sfx_groups" in plan_a else None)
+    write_json(out / "breakdown.json", breakdown, compact=True)
     write_reports(breakdown, out)
     return breakdown
