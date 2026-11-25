@@ -52,6 +52,24 @@ def ffprobe(path: str | Path) -> dict:
     return json.loads(out)
 
 
+def duration_s(path: str | Path) -> float:
+    """A file's length in seconds: the container's, else its video stream's; 0.0 when neither can be read."""
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "format=duration:stream=duration",
+           "-of", "json", str(path)]
+    try:
+        data = json.loads(subprocess.run(cmd, check=True, capture_output=True, text=True).stdout or "{}")
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        return 0.0
+    for v in (data.get("format", {}).get("duration"), *(s.get("duration") for s in data.get("streams") or [])):
+        try:
+            d = float(v)
+        except (TypeError, ValueError):
+            continue
+        if d > 0:
+            return d
+    return 0.0
+
+
 def _ratio(value: str | None) -> float:
     if not value or value in ("0/0", "N/A"):
         return 0.0

@@ -18,6 +18,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .media import duration_s
 from .util import LOG, read_json, read_image
 
 
@@ -72,12 +73,10 @@ def fit_speed(clip_s: float, duration: float) -> float:
 
 
 def _clip_seconds(src: Path) -> float:
-    try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(src)],
-                           capture_output=True, text=True, check=True)
-        return float(r.stdout.strip() or 0)
-    except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
-        return 0.0
+    d = duration_s(src)
+    if d <= 0:
+        LOG.warning("could not read the length of %s; it plays at normal speed", src.name)
+    return d
 
 
 def frame_bounds(shots: list[dict], fps: float) -> dict[int, tuple[int, int]]:

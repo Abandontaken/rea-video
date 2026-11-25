@@ -11,13 +11,13 @@ from __future__ import annotations
 import base64
 import json
 import os
-import subprocess
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from . import __version__
+from .media import duration_s
 from .util import LOG
 
 API = "https://generativelanguage.googleapis.com"
@@ -32,15 +32,6 @@ def api_key() -> str:
 
 def configured() -> bool:
     return bool(api_key())
-
-
-def _duration(p: Path) -> float:
-    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(p)],
-                       capture_output=True, text=True)
-    try:
-        return float(r.stdout.strip())
-    except ValueError:
-        return 0.0
 
 
 class GeminiError(RuntimeError):
@@ -124,7 +115,9 @@ class GeminiClient:
                     uploaded.append(info["name"])
                     part = {"file_data": {"mime_type": info.get("mimeType") or mime, "file_uri": info["uri"]}}
                 if mime.startswith("video/"):
-                    d = _duration(p)
+                    d = duration_s(p)
+                    if d <= 0:
+                        LOG.warning("could not read the length of %s; Gemini samples it at its default rate", p.name)
                     fps = next((f for lim, f in CLIP_FPS if 0 < d <= lim), None)
                     if fps:
                         part["video_metadata"] = {"fps": fps}

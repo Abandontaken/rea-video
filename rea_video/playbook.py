@@ -271,7 +271,11 @@ def _generate(b: dict) -> list[str]:
     secs = sum(float(u.get("duration") or 0) for u in units)
     chained = any(any(i.get("kind") == "first_frame" and i.get("need") == "yes" and "shot_" not in (i.get("source") or "") for i in u.get("inputs") or [])
                   for u in units)
-    native = ((b.get("sound_sources") or {}).get("voice") or {}).get("source") == "ai_video_native"
+    from .generation import effective_native_audio
+
+    spec = plan.get("spec") or {}
+    can_native = effective_native_audio(spec, plan.get("strategy") or "") if spec else True
+    native = ((b.get("sound_sources") or {}).get("voice") or {}).get("source") == "ai_video_native" and can_native
     calls = plan.get("calls") or len(units)
     if plan.get("strategy") == "remix":
         L.append(T("**AI 生成**：{c} 次生成（共 {s:.0f} 秒）。每次把原片对应的一段当参考视频喂给模型，模型照它的分镜和节奏出完这段的镜头，"
@@ -296,6 +300,10 @@ def _generate(b: dict) -> list[str]:
         errs = [c for c in plan.get("checks") or [] if c["level"] == "error"]
         L.append(T("**提示词**：已按 {m} 的写法写好，在「AI 生成」每段里", "**Prompts**: written in {m}'s format, in each part under “AI generation”", m=m)
                  + (T("，有 {n} 处要改", ", {n} to fix", n=len(errs)) if errs else ""))
+        return L
+    if all(u.get("draft_format") for u in units):
+        L.append(T("**按模型改提示词**：每段的草稿已按 {m} 的分镜、素材标签和声音字段排好；生成前对照它的提示词指南细化（或运行 `rea-video plan <拆解目录> --rewrite-prompts` 自动重写进 `remake/prompts.json`）",
+                   "**Adapt the prompts to your model**: each unit's draft is already laid out in {m}'s shot, tag and audio format; refine it against the model's prompt guide before generating (or run `rea-video plan <folder> --rewrite-prompts`)", m=m))
         return L
     L.append(T("**按模型改提示词**：报告里的提示词是通用写法，不同模型的写法不一样（分镜头怎么写、参考图怎么指代、台词怎么写都不同）。"
                "生成前按你实际用的模型的官方提示词指南改一遍，或者让 agent 用这个模型的提示词 skill 优化",
@@ -373,7 +381,12 @@ def _footage(b: dict) -> str | None:
 def _voice(b: dict) -> str | None:
     if not ((b.get("audio") or {}).get("voice") or {}).get("present"):
         return None
-    if ((b.get("sound_sources") or {}).get("voice") or {}).get("source") == "ai_video_native" and _units(b):
+    from .generation import effective_native_audio
+
+    plan = b.get("production_plan") or {}
+    spec = plan.get("spec") or {}
+    can_native = effective_native_audio(spec, plan.get("strategy") or "") if spec else True
+    if ((b.get("sound_sources") or {}).get("voice") or {}).get("source") == "ai_video_native" and _units(b) and can_native:
         return None  # generated with the picture: the generate step says so
     src = _src(b, "voice")
     k = len(entities.script(b))

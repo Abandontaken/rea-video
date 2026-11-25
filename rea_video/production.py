@@ -233,6 +233,21 @@ def reused_footage(gen: list[dict]) -> dict[int, int]:
     return out
 
 
+def _light_word(r: dict, key: str) -> str | None:
+    """One lighting reading in the current language: the stored words are in the language the video was broken down
+    in, so an English prompt inside a Chinese report reads them again from the measurements."""
+    from .aspects import lighting
+
+    li = (r.get("aspects") or {}).get("lighting") or {}
+    v = (li.get("result") or {}).get(key)
+    if not v or lang() != "en" or not re.search(r"[㐀-鿿]", v):
+        return v
+    if key == "setup_name":
+        row = next((s for s in lighting.SETUPS if s["key"] == (li.get("result") or {}).get("setup")), None)
+        return (row or {}).get("name_en")
+    return lighting.words(li.get("measured") or {}).get(key)
+
+
 def _style_line(shots: list[dict], aspect_ratio: str) -> str:
     """One style sentence for every unit (most common lighting reading across the generated shots, by duration),
     so separately generated units still look like one video."""
@@ -243,11 +258,17 @@ def _style_line(shots: list[dict], aspect_ratio: str) -> str:
     for key in ("setup_name", "quality", "color_temp", "depth"):
         votes: dict[str, float] = {}
         for r in shots:
-            v = (((r.get("aspects") or {}).get("lighting") or {}).get("result") or {}).get(key)
+            v = _light_word(r, key)
             if v:
                 votes[v] = votes.get(v, 0.0) + r["duration"]
         if votes:
-            picks.append(max(votes.items(), key=lambda kv: kv[1])[0])
+            # the bracketed explanations are for people reading the report, not for the model
+            v = re.sub(r"\s*[（(][^）)]*[）)]", "", max(votes.items(), key=lambda kv: kv[1])[0]).strip()
+            if key == "color_temp" and re.fullmatch(r"[a-z]+", v):
+                v += " tones"  # "cool" alone is vague in an English prompt
+            words = set(re.findall(r"[a-z]+", v.lower()))
+            if v and not any(v in p or (words and words <= set(re.findall(r"[a-z]+", p.lower()))) for p in picks):
+                picks.append(v)
     if picks:
         bits.append(T("，", ", ").join(picks))
     return semi().join(bits)
@@ -349,12 +370,19 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
     new_scene = {r["index"] for r in shots if not same_prev.get(r["index"], False)}
     eng, model = pick_model(planner, intent.get("model") or engine)
     gen = [r for r in shots if r["base"]["label"] in gen_labels]
-    style = _style_line(gen, b["source"].get("aspect_ratio", "")) if gen else ""
+    from .i18n import using
+
+    style = {}  # the prompt drafts are in the model's prompt language, which may differ from the report's
+    for lg in ("zh", "en"):
+        with using(lg):
+            style[lg] = _style_line(gen, b["source"].get("aspect_ratio", "")) if gen else ""
     reused = reused_footage(gen)
     from . import dance
 
     motion = dance.motion_indices(b)  # the moves are the point: driven from the source motion, not generated from frames
-    g = gen_mod.plan_generation(b, model, intent, new_scene, style, set(reused) | motion)
+    hardcut_max = float((seg.get("multishot_hardcut_s") or {}).get("max", 10.0))
+    g = gen_mod.plan_generation(b, model, intent, new_scene, style, set(reused) | motion,
+                                notes=planner.prompting.get((model or {}).get("id")), hardcut_max_s=hardcut_max)
     units = g["units"]
     for again, src in sorted(reused.items()):
         u = next((u for u in units if src in u["shots"]), None)
@@ -376,9 +404,14 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
             plan["prompting"] = planner.prompting[model["id"]]
         voice = ((b.get("audio") or {}).get("voice") or {}).get("present")
         vsrc = ((b.get("sound_sources") or {}).get("voice") or {}).get("source")
-        if lim["native_audio"]:
+        if lim.get("no_audio_with_ref_video") and g["strategy"] == "remix":
+            plan["audio_note"] = T("当前模型在传参考视频时不能同时开启原生音频：人声、音效和配乐全部单独准备后在后期混入（若需音画同出对白，可改选支持参考视频出声的模型或改走关键帧模式）",
+                                   "sending a reference video disables native audio on this model: prepare voice, sound effects and music separately and mix them in post")
+        elif lim["native_audio"]:
             plan["audio_note"] = T("模型可以同时生成动作音效和环境声", "the model can generate action sound effects and ambience along with the picture") + \
-                (semi() + (T("口播建议单独 TTS 再混进去，方便改文案和卡时间", "voice-over is better done as separate TTS and mixed in, so copy and timing stay editable")
+                (semi() + (T("原片对白是随画面生成的：台词已按该模型格式放进提示词草稿", "the original dialogue was generated with the picture: spoken lines are formatted into the prompt drafts")
+                           if vsrc == "ai_video_native" else
+                           T("口播建议单独 TTS 再混进去，方便改文案和卡时间", "voice-over is better done as separate TTS and mixed in, so copy and timing stay editable")
                            if vsrc == "tts" else
                            T("口播是真人录的：单独录好再混进去，不让视频模型生成，方便改文案和卡时间",
                              "the voice was recorded by a person: record it separately and mix it in rather than having the video model speak, so copy and timing stay editable"))
@@ -574,6 +607,9 @@ def report_md(plan: dict) -> list[str]:
         L += ["", T("### 生成单元", "### Generation units"), ""] + gen_report(plan, plan.get("prompts") or {})
         if plan.get("prompting") and lang() == "zh":
             L += ["", "<details><summary>" + f"{plan['model_name']} 的提示词写法" + "</summary>", ""] + prompting_md(plan["prompting"]) + ["", "</details>"]
+        elif plan.get("prompting") and (plan["prompting"].get("sources") or []):
+            srcs = [f"- {u}" for u in plan["prompting"]["sources"]]
+            L += ["", f"<details><summary>Prompt guides for {plan['model_name']}</summary>", ""] + srcs + ["", "</details>"]
     if plan.get("drive"):
         from .dance import report_md as _drive_md
 

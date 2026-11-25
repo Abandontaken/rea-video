@@ -54,7 +54,8 @@ kind 取 {"|".join(ASSET_KINDS)}，is_real_material 为 true/false）。
 同一段成片在片中出现不止一次（开头先放一段成片当预告、结尾完整放；或中途回放），在较短的那一处填 same_clip_as：另一处的镜头号（整数），复刻时只生成一次；不是就不要填。
 实拍或定格镜头被 AI 二次加工过时填 ai_edits：[{{"kind": "{"|".join(EDIT_KINDS)}", "evidence": "看到的破绽"}}]（换脸、对口型、风格化、换装、换背景、加删物体、美颜）；没有就留空。
 AI 生成 / 3D / 实拍镜头再填 replication：image_prompt（复刻首帧的<PROMPT_LANG>图像提示词：景别、机位高度和俯仰角、主体在画面里的位置和朝向、主体、光线、风格，有人物时写首帧的表情，具体可执行）、
-video_prompt（复刻该镜头的<PROMPT_LANG>视频提示词：先写景别、机位角度、主体在画面里的位置，再写动作过程和结束状态、运镜；人物表演写看得见的表情和动作，不写情绪词，幅度宁小勿大；只写想要的内容，不写否定句）、video_prompt_en（英文版）。
+video_prompt（复刻该镜头的<PROMPT_LANG>视频提示词：先写景别、机位角度、主体在画面里的位置，再写动作过程和结束状态、运镜；人物表演写看得见的表情和动作，不写情绪词，幅度宁小勿大；只写想要的内容，不写否定句）、video_prompt_en（英文版）、
+motion_prompt（首帧/首尾帧模式下的纯动态提示词：只写动作过程、结束状态和运镜，不重复描述首帧图里已有的外貌、场景和光线）、motion_prompt_en（英文纯动态版）。
 这些提示词会被合并进「生成单元」的多镜头提示词，所以每镜只写这一镜的内容，统一的风格和场景描述写在 description 里即可。
 
 实拍/写实镜头再填 aspects（怎么拍、怎么打光；纯图形/界面画面不填），像素测不出的部分靠你看：
@@ -213,7 +214,7 @@ def build_tasks(breakdown: dict, out_dir: str) -> tuple[dict, dict]:
                                      "evidence": [], "description": "", "narrative": {"role": "", "point": ""}, "embedded_assets": [],
                                      "ai_edits": list(((rec_by_id.get(s["id"], {}).get("vlm") or {}).get("ai_edits")) or []),
                                      "same_clip_as": None,
-                                     "replication": {"image_prompt": "", "video_prompt": "", "video_prompt_en": ""},
+                                     "replication": {"image_prompt": "", "video_prompt": "", "video_prompt_en": "", "motion_prompt": "", "motion_prompt_en": ""},
                                      **({"aspects": aspects.review_template()} if shoot[s["id"]] else {}),
                                      **({"performance": dict(PERF_TEMPLATE)} if acting[s["id"]] else {})} for s in shots],
                "aspects": aspects.review_template(video=True),
@@ -263,7 +264,7 @@ def _clean(ans: dict) -> tuple[dict | None, str | None]:
     soft = {k: AGENT_WEIGHT * v / total + (1 - AGENT_WEIGHT) * u for k, v in vals.items()}
     src = ans.get("image_source") if ans.get("image_source") in IMAGE_SOURCES else "unknown"
     rep_in = ans.get("replication") if isinstance(ans.get("replication"), dict) else {}
-    rep = {k: str(rep_in.get(k) or "").strip() for k in ("image_prompt", "video_prompt", "video_prompt_en") if str(rep_in.get(k) or "").strip()}
+    rep = {k: str(rep_in.get(k) or "").strip() for k in ("image_prompt", "video_prompt", "video_prompt_en", "motion_prompt", "motion_prompt_en") if str(rep_in.get(k) or "").strip()}
     assets = []
     for e in ans.get("embedded_assets") or []:
         if isinstance(e, dict) and e.get("kind") in ASSET_KINDS:

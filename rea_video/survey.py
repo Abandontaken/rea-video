@@ -1022,7 +1022,25 @@ def build_timeline(track: FrameTrack, shots: list[Shot], found: dict, meta: dict
         # (whip, dissolve, ...) where the transition starts is the same change, seen from its first frame
         at_edge = [c for c in cuts if c not in inside and c["span"][0] - edge <= t <= c["span"][1] + edge and c["span"][1] > c["span"][0]
                    and not (s.transition_in not in (None, "cut", "start", "flash") and t <= c["span"][0] + edge)]
-        if inside or (not at_edge and any(c["span"][0] - near <= t <= c["span"][1] + near for c in cuts)):
+        # hard cuts the survey called inside a transition the detector measured (a dissolve, a fade, a wipe, ...) are
+        # that transition, seen on small tiles: one boundary, at the detector's frame, with its kind and span. Only the
+        # frames the transition changes (its first blended frame to the first frame after it): a cut later than that
+        # is a change of its own next to it
+        tr = s.transition if s.transition_in not in (None, "start", "cut", "jump", "flash") else {}
+        if tr and "start_frame" in tr and "end_frame" in tr:
+            fa, fz = int(tr["start_frame"]), int(tr["end_frame"])
+            a, z = _t(track, fa), _t(track, fz)
+            own = [c for c in cuts if c["by"] == "survey" and c["span"][1] - c["span"][0] <= 2 * edge and fa < c["frame"] <= fz + 1]
+            if own and inside:  # the survey's own transition over it takes the detector's frame below
+                cuts[:] = [c for c in cuts if not any(c is o for o in own)]
+            elif own:
+                own[0].update(frame=s.start_frame, t=round(t, 3), kind=s.transition_in, span=[round(a, 3), round(z, 3)], by="survey+tool")
+                own[0].pop("unsure", None)
+                cuts[:] = [c for c in cuts if not any(c is o for o in own[1:])]
+                continue
+        # "near" is asked of the survey's changes only: another detector cut close by is a cut of its own (the detector
+        # keeps clean cuts 0.12 s apart)
+        if inside or (not at_edge and any(c["span"][0] - near <= t <= c["span"][1] + near for c in cuts if c["by"] != "tool")):
             for c in inside:  # the survey found the same change: take the detector's exact frame
                 c.update(frame=s.start_frame, t=round(t, 3), by="survey+tool")
                 if c["kind"] in ("cut", "effect") and s.transition_in not in ("cut", "start"):

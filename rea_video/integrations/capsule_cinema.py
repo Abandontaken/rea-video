@@ -290,13 +290,30 @@ def write_handoff(b: dict, bdir: Path, jobs: list[dict]) -> Path:
              for sh in b["shots"]]
     code = bdir / "code" / "remake.mp4"
     out = rdir / "handoff.json"
+    api_opts = (plan.get("spec") or {}).get("api_params") or {}
     write_json(out, {"schema": HANDOFF_SCHEMA, "width": w, "height": h, "fps": src["fps"], "duration": duration,
-                     "has_audio": bool(src.get("has_audio")), "shots": shots,
+                     "has_audio": bool(src.get("has_audio")), "engine": plan.get("model"),
+                     **({"model_options": api_opts} if api_opts else {}), "shots": shots,
                      "overlays": {"ass": ass, "stickers": stickers}, "code_video": "code/remake.mp4" if code.is_file() else None})
     return out
 
 
 GEN_TYPE = {"remix": "multimodal", "keyframes": "multimodal", "frames": "first_last_frame", "text": "text_to_video"}
+
+
+def _unit_model_options(u: dict, spec: dict, eng: str | None, vids: list[str], images: list[dict]) -> dict:
+    """Model-specific API switches from the capability map, plus structured multi-shot / audio flags where needed."""
+    opts = dict(spec.get("api_params") or {})
+    if opts.get("omni_reference_task_type") == "reference" and not (vids or images):
+        opts.pop("omni_reference_task_type", None)  # only meaningful when reference media are sent
+    if spec.get("no_audio_with_ref_video") and vids:
+        opts["enable_audio"] = False
+    if eng == "kling-3.0" and len(u.get("brief") or []) > 1:
+        opts["shot_type"] = "customize"
+        opts["multi_prompt"] = [{"index": idx, "prompt": str(x.get("action") or x.get("source") or "")[:512],
+                                 "duration": max(1, int(round(x["duration"])))}
+                                for idx, x in enumerate(u["brief"], 1)]
+    return opts
 
 
 def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str, str]) -> list[dict]:
@@ -321,7 +338,7 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
             gtype = GEN_TYPE[u["strategy"]]
             params = {"prompt": prompt, "output_dir": str(run_dir / (u["id"] if len(parts) == 1 else f"{u['id']}-{part}")),
                       "generation_type": gtype, "engine": eng, "aspect_ratio": b["source"].get("aspect_ratio") or "9:16",
-                      "duration": int(min(hi, max(lo, round(secs + 0.49))))}
+                      "duration": int(u.get("call_s") or min(hi, max(lo, round(secs + 0.49))))}
             if vids:
                 params["video_paths"] = vids
             if images:
@@ -339,9 +356,11 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
             words = list(dict.fromkeys(w for t in times for w in scene_text(b, t)))
             warning = T("参考帧里还有画面内文字（{w}），模型可能照着生成：换成干净图，或确认有授权", "the reference frames still show text in the picture ({w}), which the model may copy: use a clean image or confirm you have the rights",
                         w=join(words[:6])) if words else None
+            m_opts = _unit_model_options(u, spec, eng, vids, images)
             jobs.append({"shot": u["shots"][0], "id": jid, "unit": u["id"], "part": part, "parts": len(parts), "shots": u["shots"],
                          "executor": "capsule_cinema", "label": u["label"], "strategy": u["strategy"], "images": images,
-                         "params": params, "trim_to": round(secs, 3), "prompt_source": "final" if u["id"] in prompts else "draft",
+                         "params": params, **({"model_options": m_opts} if m_opts else {}),
+                         "trim_to": round(secs, 3), "prompt_source": "final" if u["id"] in prompts else "draft",
                          **({"warning": warning} if warning else {})})
     return jobs
 

@@ -499,11 +499,17 @@ def _plan_md(b: dict) -> list[str]:
             pre = ["", f'<details class="ref"><summary>{_pre_summary}</summary>', ""] + pre + ["", "</details>", ""]
         m = plan.get("model_name") or T("视频模型", "the video model")
         drafts = [u["id"] for u in plan.get("units") or [] if u["id"] not in (plan.get("prompts") or {})]
-        tip = (T("> ⚠️ {u} 的提示词还是通用草稿。生成前按 {m} 的官方写法改好（或让 agent 用这个模型的提示词 skill 写），放进 `remake/prompts.json`，"
-                 "图片编号按单元里「参考图」的顺序；写好后 `rea-video plan` 会检查格式。",
-                 "> ⚠️ {u}: the prompts are still generic drafts. Rewrite them in {m}'s official format (or have the agent write them with that model's "
-                 "prompting skill) into `remake/prompts.json`, numbering images in the unit's reference order; `rea-video plan` then checks the format.",
-                 u="、".join(drafts), m=m) if drafts else "")
+        shaped = drafts and all(u.get("draft_format") for u in plan["units"] if u["id"] in drafts)
+        tip = ((T("> ⚠️ {u} 的提示词是工具草稿，已按 {m} 的格式排好。生成前对照它的写法和同类优质提示词核对、改好，放进 `remake/prompts.json`；"
+                  "写好后 `rea-video plan` 会检查格式。",
+                  "> ⚠️ {u}: the prompts are the tool's drafts, already in {m}'s layout. Check them against the model's conventions and good "
+                  "prompts for similar shots, then put the finals into `remake/prompts.json`; `rea-video plan` then checks the format.",
+                  u=join(drafts), m=m) if shaped else
+                T("> ⚠️ {u} 的提示词还是通用草稿。生成前按 {m} 的官方写法改好（或让 agent 用这个模型的提示词 skill 写），放进 `remake/prompts.json`，"
+                  "图片编号按单元里「参考图」的顺序；写好后 `rea-video plan` 会检查格式。",
+                  "> ⚠️ {u}: the prompts are still generic drafts. Rewrite them in {m}'s official format (or have the agent write them with that model's "
+                  "prompting skill) into `remake/prompts.json`, numbering images in the unit's reference order; `rea-video plan` then checks the format.",
+                  u=join(drafts), m=m)) if drafts else "")
         n_calls = plan.get("calls") or len(plan["units"])
         sub(T("AI 生成", "AI generation"), [T("**分 {c} 次生成，共 {s:.0f} 秒**", "**{c} generation{p}, {s:.0f} s in total**", c=n_calls, p="" if n_calls == 1 else "s",
                                               s=sum(float(u.get("duration") or 0) for u in plan["units"])), ""] + ([tip, ""] if tip else []) + parts["units"] + pre)

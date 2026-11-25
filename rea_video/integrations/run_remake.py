@@ -101,8 +101,25 @@ def main() -> None:
         print(f"{label}: {j['params']['generation_type']} via {j['params']['engine']} ...", flush=True)
         try:
             if j.get("unit"):  # a unit's references go straight to the engine's own tool
+                import inspect
+
+                eng_tool = vgt._tool_for_engine(vgt.normalize_video_engine(j["params"]["engine"]))
                 p = {k: v for k, v in j["params"].items() if k != "engine"}
-                res = vgt._tool_for_engine(vgt.normalize_video_engine(j["params"]["engine"]))._run(**p)
+                m_opts = j.get("model_options") or {}
+                if m_opts:
+                    sig = inspect.signature(eng_tool._run)
+                    accepts_var_kw = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values())
+                    if accepts_var_kw:
+                        p.update(m_opts)
+                    else:
+                        for k, v in m_opts.items():
+                            if k in sig.parameters:
+                                p[k] = v
+                        if "extra" in sig.parameters and isinstance(p.get("extra"), (dict, type(None))):
+                            rest = {k: v for k, v in m_opts.items() if k not in sig.parameters}
+                            if rest:
+                                p["extra"] = {**(p.get("extra") or {}), **rest}
+                res = eng_tool._run(**p)
             else:
                 res = tool._run(**j["params"])
         except Exception as exc:  # keep going, record the failure

@@ -29,7 +29,7 @@ def _env(args) -> None:
             if explicit:
                 raise SystemExit(f"rea-video: {msg}")
             LOG.warning("%s%s", msg, U("（来自 prefs env_file）", " (from prefs env_file)"))
-        files.insert(0, Path(env_file))
+        files.insert(0, Path(env_file).expanduser())
     loaded = load_env_files(files)
     if loaded:
         LOG.debug("env loaded from %s", loaded)
@@ -709,6 +709,7 @@ def cmd_correct(args) -> int:
 
     out = Path(args.out_dir)
     b = read_json(out / "breakdown.json")
+    set_lang(b.get("lang", "zh"))
     real = None if args.real is None else args.real == "yes"
     try:
         logged = correct(b, label=args.label, real=real, shots=args.shots, start=args.start, end=args.end, note=args.note or "")
@@ -764,6 +765,15 @@ def cmd_plan(args) -> int:
     set_lang(b.get("lang", "zh"))
     b = finalize(b, out, engine=m["id"])
     plan = b.get("production_plan") or {}
+    if getattr(args, "rewrite_prompts", False) and plan.get("units"):
+        from .generation import rewrite_prompts
+
+        _check_vlm_config()
+        rewritten = rewrite_prompts(plan, out, client=_vlm_client(out))
+        b = finalize(b, out, engine=m["id"])
+        plan = b.get("production_plan") or {}
+        print(T("已按 {m} 的写法自动重写 {n} 段提示词 → {f}", "Rewrote {n} unit prompt(s) for {m} → {f}",
+                m=m["id"], n=len(rewritten), f=out / "remake" / "prompts.json"))
     n = sum(len(ref_clips(b, out, u)) for u in plan.get("units") or [])
     v = m.get("verified") or {}
     print(T("复刻方案已按 {m} 重出（报告第二部分）：{p}", "Remake plan redone for {m} (part two of the report): {p}",
@@ -883,8 +893,10 @@ def _cli_lang(argv: list[str] | None) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     set_ui_lang(_cli_lang(argv))
     ap = argparse.ArgumentParser(prog="rea-video", description="逆向拆解视频：逐镜头判断实拍 / AI 生成 / 代码渲染 / 混合，并生成复刻方案")
-    ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("-v", "--verbose", action="store_true", help="输出调试日志与完整异常堆栈")
     ap.add_argument("--env-file", help="额外的 .env（例如 capsule-cinema/.env，用于 VLM 配置）")
+    ap.add_argument("--lang", dest="root_lang", choices=LANGS, default=argparse.SUPPRESS,
+                    help="命令行帮助和提示的语言：zh（默认）/ en；用在 decompose、apply-review 上时也决定报告语言")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("decompose", help="拆解一条视频")
@@ -1081,6 +1093,7 @@ def main(argv: list[str] | None = None) -> int:
     pl_.add_argument("out_dir", help="拆解目录")
     pl_.add_argument("--model", help="模型 id 或名称，写进 remake/intent.yaml（rea-video models 列出的；没有的先查资料补进 ~/.rea-video/capabilities/models/）")
     pl_.add_argument("--generate", choices=["ai", "all"], help="ai：只生成原片里 AI 做的镜头，实拍的出拍摄方案；all：整条都用模型生成（换人、换物后整条复刻）")
+    pl_.add_argument("--rewrite-prompts", action="store_true", help="用已配置的大模型（GEMINI_API_KEY 或 REA_VLM_*）按所选模型的提示词指南自动重写每段提示词，校验后写入 remake/prompts.json")
     pl_.set_defaults(func=cmd_plan)
 
     mo = sub.add_parser("models", help="列出能力地图里的生成模型；带模型 id 时打印这个模型的提示词写法和关键帧要求")
@@ -1099,13 +1112,17 @@ def main(argv: list[str] | None = None) -> int:
     me.add_argument("--export-labels", metavar="YAML")
     me.set_defaults(func=cmd_memory)
 
-    for sp in sub.choices.values():  # also accept `rea-video decompose x.mp4 --env-file ...`
+    for sp in sub.choices.values():  # also accept `rea-video decompose x.mp4 --env-file ...` and `<cmd> --lang en`
         sp.add_argument("--env-file", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        if not any("--lang" in a.option_strings for a in sp._actions):
+            sp.add_argument("--lang", choices=LANGS, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
 
     from .cli_en import localize
 
     localize(ap, ", ".join(LABELS))
     args = ap.parse_args(argv)
+    if getattr(args, "lang", None) is None and getattr(args, "root_lang", None):
+        args.lang = args.root_lang  # `rea-video --lang en decompose ...`: the subcommand's own default would drop it
     setup_logging(args.verbose)
     _env(args)
     from .media import MediaError

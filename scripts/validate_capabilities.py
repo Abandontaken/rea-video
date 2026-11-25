@@ -153,9 +153,29 @@ def main() -> int:
                 continue
             if k == "lint":  # machine-checked format rules for final prompts (rea_video/generation.py lint_prompt)
                 ok = isinstance(x, dict) and set(x) <= {"language", "max_chars", "max_cjk", "require", "forbid"} and all(
-                    isinstance(f, dict) and f.get("re") and f.get("why") for f in x.get("forbid") or [])
+                    isinstance(f, dict) and f.get("re") and f.get("why") and set(f) <= {"re", "why", "when", "level"}
+                    and f.get("when") in (None, "refs") and f.get("level") in (None, "error", "warn") for f in x.get("forbid") or [])
                 if not ok:
                     errors.append(f"prompting.yaml:{mid}: lint 格式不对")
+                continue
+            if k == "draft":  # the layout of the tool's prompt draft for this model (rea_video/generation.py _draft)
+                keys = {"lang", "head", "shot", "first_shot", "remix_shot", "join", "image_tag", "video_tag",
+                        "negatives_line", "camera_brackets", "dialogue_fmt", "sfx_fmt", "tail"}
+                ok = isinstance(x, dict) and set(x) <= keys and x.get("lang") in (None, "zh", "en")
+                for f in ("shot", "first_shot", "remix_shot"):
+                    for v in ((x or {}).get(f).values() if isinstance((x or {}).get(f), dict) else [(x or {}).get(f)]):
+                        try:
+                            v and v.format(i=1, I_WORD="ONE", text="", a="", z="", at="", s0=0, s1=1, d=1)
+                        except (KeyError, IndexError, ValueError):
+                            ok = False
+                for f in ("dialogue_fmt", "sfx_fmt"):
+                    for v in ((x or {}).get(f).values() if isinstance((x or {}).get(f), dict) else [(x or {}).get(f)]):
+                        try:
+                            v and v.format(speaker="S1", lang="English", text="", emotion="")
+                        except (KeyError, IndexError, ValueError):
+                            ok = False
+                if not ok:
+                    errors.append(f"prompting.yaml:{mid}: draft 格式不对")
                 continue
             if k in text_keys and not isinstance(x, str) or k in list_keys and not (isinstance(x, list) and all(isinstance(i, str) for i in x)):
                 errors.append(f"prompting.yaml:{mid}: 字段 {k} 类型不对")

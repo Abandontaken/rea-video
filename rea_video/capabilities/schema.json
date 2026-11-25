@@ -26,6 +26,7 @@
           "properties": {"image": {"type": "integer"}, "video": {"type": "integer"}, "audio": {"type": "integer"}, "total": {"type": "integer"}}
         },
         "ref_video_s": {"$ref": "#/$defs/range", "description": "Total length of the reference videos one request accepts"},
+        "duration_with_refs_s": {"type": "array", "items": {"type": "number"}, "description": "The only lengths a call takes when reference images or videos are sent"},
         "keyframes": {"type": "integer"},
         "shots_per_generation": {"type": "integer"},
         "prompt_tokens": {"type": "integer"},
@@ -59,7 +60,19 @@
       }
     },
     "confidence": {"enum": ["high", "medium", "low"]},
-    "planning": {"type": "object", "additionalProperties": false, "description": "How remake plans use this model by default, when that is narrower than its limits", "properties": {"strategy": {"enum": ["remix", "keyframes", "frames", "text"]}, "images": {"type": "integer", "minimum": 1}}},
+    "planning": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How remake plans use this model by default, when that is narrower than its limits",
+      "properties": {
+        "strategy": {"enum": ["remix", "keyframes", "frames", "text"]},
+        "images": {"type": "integer", "minimum": 1},
+        "no_real_faces": {"type": "boolean", "description": "Model rejects reference images or videos containing identifiable real human faces"},
+        "no_audio_with_ref_video": {"type": "boolean", "description": "Native audio cannot be enabled when a reference video is sent"},
+        "max_hardcut_s": {"type": "number", "minimum": 1, "description": "Maximum seconds of consecutive hard-cut shots in a non-remix multi-shot call"},
+        "api_params": {"type": "object", "description": "Model-specific API parameters to pass in remake jobs"}
+      }
+    },
     "prompting": {"type": "object", "description": "Optional inline prompt-writing rules for user-defined model entries"},
     "probe_scores": {"type": "object"},
     "notes": {"type": "string"}
@@ -67,7 +80,8 @@
   "$defs": {
     "range": {
       "type": "object", "additionalProperties": false,
-      "properties": {"min": {"type": "number"}, "max": {"type": "number"}}
+      "properties": {"min": {"type": "number"}, "max": {"type": "number"},
+                     "steps": {"type": "array", "items": {"type": "number"}, "description": "The only lengths a call takes, when the model does not take any length in its range"}}
     }
   }
 }

@@ -80,12 +80,69 @@ def engine_range(engine: str | None, models: dict | None = None) -> tuple[int, i
     return 4, 15
 
 
+PROMPT_KEYS = ("image_prompt", "video_prompt", "video_prompt_en", "motion_prompt", "motion_prompt_en")
+
+
 def shot_prompts(shot: dict) -> dict:
     """Reverse-engineered prompts for one shot: the agent's review wins over the VLM (it is the later, checked pass)."""
     out = {}
     for src in ((shot.get("vlm") or {}).get("replication") or {}, (shot.get("review") or {}).get("replication") or {}):
-        out.update({k: v for k, v in src.items() if k in ("image_prompt", "video_prompt", "video_prompt_en") and v})
+        out.update({k: v for k, v in src.items() if k in PROMPT_KEYS and v})
     return out
+
+
+HAILUO_MOVES = {
+    "推": "[Push in]", "push-in": "[Push in]",
+    "拉": "[Pull out]", "pull-out": "[Pull out]",
+    "摇": "[Pan right]", "pan": "[Pan right]",
+    "移": "[Truck right]", "track": "[Tracking shot]",
+    "摇/移": "[Pan right,Truck right]", "拉/摇/移": "[Pull out,Pan right]",
+    "跟": "[Tracking shot]", "tracking": "[Tracking shot]",
+    "环绕": "[Pan right,Truck left]", "orbit": "[Pan right,Truck left]",
+    "手持": "[Shake]", "handheld": "[Shake]",
+}
+
+
+def hailuo_bracket(shot: dict) -> str:
+    """Hailuo 2.3's fixed bracket camera command for a shot, from its measured or seen camera movement."""
+    from .aspects.vocab import canon
+
+    cm = ((shot.get("aspects") or {}).get("camera") or {}).get("measured") or {}
+    v = shot.get("review") or shot.get("vlm") or {}
+    move = cm.get("move") or v.get("camera_move")
+    c = canon(move) if move else None
+    if c and c in HAILUO_MOVES:
+        return HAILUO_MOVES[c]
+    if move and str(move).lower() in HAILUO_MOVES:
+        return HAILUO_MOVES[str(move).lower()]
+    feat = (shot.get("features") or {}).get("camera")
+    if feat == "handheld_like":
+        return "[Shake]"
+    if feat == "smooth_move":
+        return "[Tracking shot]"
+    if feat == "planar_zoom_pan":
+        z = (shot.get("features") or {}).get("zoom_per_s", 0.0)
+        return "[Push in]" if z > 0.01 else "[Pull out]" if z < -0.01 else "[Pan right]"
+    return "[Static shot]"
+
+
+def camera_move_words(shot: dict) -> tuple[str, str]:
+    """Only the camera move (report language, English), for first-frame mode where static framing is already in the image."""
+    from .aspects.vocab import ZH2EN, canon, show
+
+    cm = ((shot.get("aspects") or {}).get("camera") or {}).get("measured") or {}
+    v = shot.get("review") or shot.get("vlm") or {}
+    move = cm.get("move") or (v.get("camera_move") if v.get("camera_move") not in (None, "", "固定", "static") else None)
+    if not move:
+        feat = (shot.get("features") or {}).get("camera")
+        if feat == "handheld_like":
+            return T("手持镜头", "handheld camera"), "handheld camera"
+        if feat == "smooth_move":
+            return T("镜头平滑移动", "smooth camera movement"), "smooth camera movement"
+        return T("固定镜头", "static camera"), "static camera"
+    c = canon(move)
+    en_m = ZH2EN.get(c) or (move if move.isascii() else "moves")
+    return T("镜头{m}", "camera {m}", m=show(move)), f"camera {en_m}"
 
 
 def _where(cx: float | None, cy: float | None) -> tuple[str, str] | None:

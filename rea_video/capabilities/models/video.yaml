@@ -18,6 +18,7 @@ models:
       # 首帧 / 首尾帧 和 参考图 / 参考视频 / 参考音频 不能放在同一个请求里（多家接口文档一致；即梦 App 的「全能参考」可用 @图片 作为首帧）
       exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference, video.reference_video, video.reference_audio]]
     audio: {native: true}
+    planning: {no_real_faces: true, api_params: {omni_reference_task_type: reference}}
     strengths:
       - 单次 30 秒，内含多个逻辑连贯的镜头
       - 一次可传 30 图 + 10 视频 + 10 音频参考；支持 clay render（无纹理 3D 白模）、动作、创意参考
@@ -51,6 +52,7 @@ models:
       # 首帧 / 首尾帧 和 参考素材 不能同传：按 Seedance 2.5 推断，Flash 没有单独说明
       exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference, video.reference_video, video.reference_audio]]
     audio: {native: true}
+    planning: {no_real_faces: true, api_params: {omni_reference_task_type: reference}}
     strengths:
       - 比 Seedance 2.5 便宜约三分之一、快约一倍，适合出草稿
       - 和 2.5 一样有首尾帧和全能参考两种模式
@@ -82,6 +84,7 @@ models:
       # 首帧 / 首尾帧 和 参考素材 不能放在同一个请求里；即梦 App 的「全能参考」可用 @图片 作为首帧
       exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference, video.reference_video, video.reference_audio]]
     audio: {native: true}
+    planning: {no_real_faces: true}
     strengths:
       - 成本低；Mini 720p 被 Hypit 用作 A-roll / B-roll 主力（单条视频总成本约 1.1 美元）
       - 一次可出多个镜头：在提示词里按镜头编号写（不支持逐镜时间戳）
@@ -205,6 +208,7 @@ models:
       refs: {image: 7, video: 1}
       ref_video_s: {min: 3, max: 10}
     audio: {native: true}
+    planning: {no_audio_with_ref_video: true}
     strengths:
       - 视频改视频：换角色或道具、重新风格化、重打光，保留原动作
       - Element 参考一致性更强；Director Mode 可组合文本、首尾帧、参考图和角色视频
@@ -227,7 +231,8 @@ models:
     access: [app, api]
     primitives: [video.t2v, video.i2v_first_frame, video.i2v_first_last, video.multi_reference, video.multi_shot, video.extend, video.native_audio]
     limits:
-      duration_s: {min: 4, max: 8}
+      duration_s: {min: 4, max: 8, steps: [4, 6, 8]}
+      duration_with_refs_s: [8]
       resolutions: [720p, 1080p, 4K]
       refs: {image: 4}
     audio: {native: true}
@@ -352,6 +357,7 @@ models:
     limits:
       duration_s: {max: 16}
     audio: {native: true}
+    planning: {api_params: {is_rec: false}}
     strengths:
       - Reference-to-Video 主打多主体一致：主体、环境、服装、道具、风格都可以作为参考
       - 原生音效覆盖环境声、动作音、Foley、情绪音效；内置粒子、流体、转场等 6 类特效
@@ -376,6 +382,7 @@ models:
       resolutions: [540p, 720p, 1080p, 2K, 4K]
       refs: {image: 15, audio: 3}
     audio: {native: true, voice_ref: true}
+    planning: {api_params: {is_rec: false}}
     strengths:
       - 表演和口型自然，台词和音效一起生成；最高 4K，2K / 4K 为 10-bit
       - 参考生视频最多 15 张参考图加 3 段声音参考，保持角色长相和音色
@@ -405,6 +412,7 @@ models:
       duration_s: {max: 15}
       resolutions: [1080p]
     audio: {native: true}
+    planning: {strategy: keyframes, api_params: {thinking_type: disabled}}
     strengths:
       - 20 多种镜头参数（焦段、光圈、景深、畸变、色差、暗角），适合复刻有特定"镜头感"的片子
       - 多镜头；Hypit 已接入（通过 HypiHub 支持参考视频与首尾帧）
@@ -470,6 +478,7 @@ models:
       # 首帧 / 尾帧 和 参考素材 不能同传；视频和音频只能在参考模式下用
       exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference, video.reference_video, video.reference_audio]]
     audio: {native: true, voice_ref: true}
+    planning: {strategy: frames, api_params: {prompt_expansion_mode: disabled}}
     strengths:
       - H3 的快速版（名字叫 Max，官方文档写的是快速生成档），厂商称 5 秒片段约 3 秒出
       - 参考图、参考视频、参考音频都能用；可以关掉提示词扩写
@@ -498,6 +507,7 @@ models:
       resolutions: [480p, 768p]
       refs: {image: 9, video: 3, audio: 3, total: 12}
     audio: {native: true, voice_ref: true}
+    planning: {strategy: keyframes, images: 4}
     strengths:
       - 便宜、快（6 步采样）；可以单独导出声音分轨
       - 提示词指南写得很细，参考图、参考视频、参考音频都能用
@@ -600,6 +610,7 @@ models:
       duration_s: {max: 10}
       resolutions: [768p, 1080p]
     audio: {native: false}
+    planning: {api_params: {prompt_optimizer: false}}
     strengths:
       - 微表情、风格化、动作有提升
       - 便宜（Fast 版 768p 6 秒约 0.19 美元起）
@@ -627,6 +638,7 @@ models:
       # 首帧 / 首尾帧 和 参考素材 不能放在同一个请求里
       exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference, video.reference_video, video.reference_audio]]
     audio: {native: true}
+    planning: {api_params: {prompt_extend: false}}
     strengths:
       - 第三方榜单第二（Elo 约 1229）
       - 一次可出多个镜头：按「第 N 个镜头[起-止秒]」写，每段 2–5 秒
@@ -691,6 +703,7 @@ models:
     limits:
       resolutions: [720p]
     audio: {native: false}
+    planning: {api_params: {prompt_extend: false}}
     strengths:
       - Apache 2.0；TI2V-5B 单张消费级显卡可跑
       - 可自部署、可微调，适合批量低成本生成
@@ -734,6 +747,7 @@ models:
     access: [open-weights, api]
     primitives: [video.t2v, video.i2v_first_frame, video.reference_audio, video.multi_shot, video.edit_v2v, video.native_audio, avatar.audio_driven]
     audio: {native: true}
+    planning: {api_params: {enhance_prompt: false}}
     strengths:
       - 开源模型中少有的音画同出，支持音频条件生成、编辑、多镜头和超分
     weaknesses:
@@ -757,6 +771,7 @@ models:
     primitives: [video.t2v, video.i2v_first_frame]
     limits:
       resolutions: [720p, 1080p]
+    planning: {api_params: {rewrite: false}}
     strengths:
       - 8.3B，约 14GB 显存可跑（需 offload）；自带超分模块，可把自身输出放大到 1080p
     weaknesses:
