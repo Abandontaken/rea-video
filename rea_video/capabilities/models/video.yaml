@@ -442,7 +442,7 @@ models:
       exclusive_inputs: [[video.i2v_first_frame, video.i2v_first_last], [video.multi_reference, video.reference_video, video.reference_audio]]
     audio: {native: true}
     # 复刻方案默认的排法，不改变上面的模型上限
-    planning: {strategy: keyframes}
+    planning: {strategy: keyframes, images: 4}
     strengths:
       - 第三方榜单前三（H3 Max Elo 约 1227），且列价最低
       - 权重开放（H3-Base 可在本地跑 768p）
@@ -507,7 +507,7 @@ models:
       resolutions: [480p, 768p]
       refs: {image: 9, video: 3, audio: 3, total: 12}
     audio: {native: true, voice_ref: true}
-    planning: {strategy: keyframes}
+    planning: {strategy: keyframes, images: 4}
     strengths:
       - 便宜、快（6 步采样）；可以单独导出声音分轨
       - 提示词指南写得很细，参考图、参考视频、参考音频都能用

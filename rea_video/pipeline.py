@@ -65,7 +65,7 @@ def vlm_units(records: list[dict], max_calls: int) -> list[list[dict]]:
 # modules that only run in finalize(): a change there needs no new decode. Everything else measures the video.
 _FINALIZE_ONLY = {"classify.py", "report.py", "plan.py", "production.py", "generation.py", "playbook.py",
                   "entities.py", "narrative.py", "review.py", "cli.py", "cli_en.py", "evaluate.py",
-                  "remake.py", "remake_qa.py", "drive.py", "code_remake.py", "clean_paths.py", "videomd.py", "pdf.py",
+                  "remake.py", "drive.py", "code_remake.py", "clean_paths.py", "videomd.py", "pdf.py",
                   "memory.py", "i18n.py", "visual.py", "readings.py", "__init__.py"}
 _DECODE_FP: str | None = None
 

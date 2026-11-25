@@ -350,7 +350,7 @@ AI 仿定格风格（材质在帧间漂移）与真正的定格动画（同一�
   "generator_guess": "可能的生成模型或工具（如 Seedance/Kling/Veo/Hailuo/Blender/Remotion/剪映 模板），无法判断写 unknown",
   "description": "镜头内容：主体、动作、场景、景别、运镜、光线；代码渲染画面写清图形元素是什么（粒子/渐变/图表/卡片/文字/矢量图形）、拼成什么形状、颜色、怎么动（进场方式、流向、变形、镜头推/环绕）、文字和数字组件在哪",
   "shot_size": "特写|近景|中景|全景|远景",
-  "camera_move": "固定|推|拉|摇|移|跟|环绕|手持（必须结合 hints 里的实测 camera_traj 与 net_zoom_pct 校验，不要把 3D 视差推进误判成拉远或固定）",
+  "camera_move": "固定|推|拉|摇|移|跟|环绕|手持（参考 hints 里的实测 camera_traj 与 net_zoom_pct；camera_traj 只是线索：人物前后移动、手持晃动和漏检的切镜都会让它误报，和画面对不上时以画面为准）",
   "style": "四维画风与质感关键词：①渲染介质（严格区分：无描边 3D CG 光追硬表面/次表面渲染、真机实拍光学、2.5D 厚涂插画、2D 线稿平涂，严禁把无描边 3D CG 泛化写成二次元插画）②材质微观肌理（如皮肤毛孔、织物经纬、拉丝/磨损金属、水体植被颗粒）③光影反差（如高反差暗调逆光、柔光漫射、硬朗轮廓光）④镜头光学特征（如前景失焦遮挡、大光圈散景光斑 Bokeh、高光辉光溢出 Bloom）",
   "overlay_text": ["后期叠加在画面上的文字（字幕/标题），不含场景里的实物文字"],
   "aspects": <<SHOT_ASPECTS>>,
@@ -360,8 +360,8 @@ AI 仿定格风格（材质在帧间漂移）与真正的定格动画（同一�
   "performance": {{"who": "", "emotion": "", "intensity": "low|mid|high", "face": "", "body": "", "arc": [], "voice": "", "key": false, "move": "", "movers": 0, "full_body": null, "backdrop": "", "en": ""}},
   "replication": {{
     "image_prompt": "复刻首帧的中文图像提示词：写清景别、机位俯仰、主体在画面中的位置与朝向，以及四维质感（渲染介质、材质微观肌理、光影反差、前景虚化/散景 Bokeh/辉光 Bloom；无描边 3D CG 须写明无黑色描边线稿），具体可执行；有人物时写首帧自然神态",
-    "video_prompt": "复刻该镜头的中文视频提示词：严格对照实测运动信号（camera_traj 与 motion_regime）写清动作过程、环境次级物理动态、结束状态与运镜方向幅度；当 motion_regime=anchored_pose 时说明主体核心姿态与朝向保持锚定，动态主要来自运镜视差及风吹发丝衣摆/水流/光影粒子/微表情，足量写出这些次级动态但严禁脑补未发生的转身、迈步或抬手等大幅肢体动作；当 motion_regime=articulated_action 时按起止帧真实变化写清肢体动作轨迹与落幅；面部表情写克制可见肌肉变化，只写正向内容，不写否定句",
-    "video_prompt_en": "same video prompt in English (strictly aligned with measured camera_traj and motion_regime: preserve full secondary physics and 3D parallax without inventing unmeasured limb/torso actions)",
+    "video_prompt": "复刻该镜头的中文视频提示词：参考实测运动信号（camera_traj 与 motion_regime；camera_traj 只是线索：人物前后移动、手持晃动和漏检的切镜都会让它误报，和画面对不上时以画面为准）写清动作过程、环境次级物理动态、结束状态与运镜方向幅度；当 motion_regime=anchored_pose 时说明主体核心姿态与朝向保持锚定，动态主要来自运镜视差及风吹发丝衣摆/水流/光影粒子/微表情，足量写出这些次级动态但严禁脑补未发生的转身、迈步或抬手等大幅肢体动作；当 motion_regime=articulated_action 时按起止帧真实变化写清肢体动作轨迹与落幅；面部表情写克制可见肌肉变化，只写正向内容，不写否定句",
+    "video_prompt_en": "same video prompt in English (use measured camera_traj and motion_regime as hints, the frames win when they disagree; preserve full secondary physics and 3D parallax without inventing unmeasured limb/torso actions)",
     "motion_prompt": "图生视频（首帧/首尾帧模式）的纯动态提示词：只写主体接下来的真实运动变化、环境物理动态（风动/流体/粒子/光影变化）、结束状态和运镜方向幅度，不重复描述首帧图里已有的静态外貌、服饰和布景",
     "motion_prompt_en": "same motion-only prompt in English (verified action progression, secondary physics, end state and camera trajectory only, without repeating static look/scene)"
   }}

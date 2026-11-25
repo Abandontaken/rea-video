@@ -48,21 +48,21 @@ REDRAWN_DIR = Path("remake") / "redrawn"
 PROMPTS_FILE = Path("remake") / "prompts.json"
 
 STRATEGY_ZH = {
-    "edit": ("原视频动作锁定编辑（锁死切镜/运镜/姿态，仅做增量改观）", "motion-preserving video edit (locks cuts, camera & poses; delta look edit only)"),
-    "remix": ("多模态参考生视频（参考视频 + 参考图/音频）", "multimodal reference-to-video (reference video + images/audio)"),
-    "keyframes": ("多图关键帧参考生视频（一次多镜头）", "multi-shot keyframe reference-to-video"),
-    "frames": ("图生视频（首帧 / 首尾帧逐镜）", "image-to-video (first / last frame per shot)"),
-    "text": ("文生视频（纯文本提示词）", "text-to-video (prompt only)"),
+    "edit": ("原片改画（动作和运镜照原片）", "edit the source (action and camera kept)"),
+    "remix": ("参考原片生成", "generate from the source as reference video"),
+    "keyframes": ("关键帧参考，一次出多个镜头", "multi-shot from key frames"),
+    "frames": ("首帧 / 首尾帧逐镜生成", "first / last frame, shot by shot"),
+    "text": ("文生视频", "text to video"),
 }
 VALID_MODES = ("match", "ai", "shoot")
 VALID_STRATEGIES = ("edit", "remix", "keyframes", "frames", "text")
 VALID_VIDEO_REFS = ("auto", "none", "source", "depth", "edge")
 VALID_IMAGE_REFS = ("auto", "none", "source", "depth", "edge")
 VIDEO_REF_ZH = {
-    "none": ("不传原视频（纯关键帧 / 提示词驱动）", "no reference video (keyframes / prompt only)"),
-    "source": ("原视频直接参考（RGB 擦除字幕）", "raw source video reference (subtitles erased)"),
-    "depth": ("深度视频参考（锁 3D 空间纵深与运镜、剥离原片外观）", "depth video reference (locks 3D depth & camera, strips source look)"),
-    "edge": ("边缘结构视频参考（锁轮廓构图与节奏、重绘材质光影）", "structural edge video reference (locks silhouettes & pacing, redraws look)"),
+    "none": ("不传原片", "no source video"),
+    "source": ("原片（擦掉字幕）", "source video (subtitles erased)"),
+    "depth": ("原片的深度视频", "depth video of the source"),
+    "edge": ("原片的轮廓线视频", "edge video of the source"),
 }
 
 
@@ -173,13 +173,13 @@ def spec_of(model: dict | None, intent: dict | None = None) -> dict:
     return {"max": float(d.get("max") or 10), "min": float(d.get("min") or 0),
             "steps": [float(x) for x in d.get("steps") or []], "steps_with_refs": [float(x) for x in lim.get("duration_with_refs_s") or []],
             "multi_shot": "video.multi_shot" in prim, "shots": int(lim.get("shots_per_generation") or 0) or None,
-            "ref_video": "video.reference_video" in prim or bool(max_rv_ov), "ref_videos": int(refs.get("video") or 1),
+            "ref_video": "video.reference_video" in prim, "ref_videos": int(refs.get("video") or 1),
             "control_video": "video.control_video" in prim,
             "edit_v2v": "video.edit_v2v" in prim,
             "pinned_keyframes": "video.keyframes" in prim,
             "ref_total": max_rv_ov if max_rv_ov else (float(rv) if rv else REF_CLIP_S * max(1, int(refs.get("video") or 1))),
-            "multi_ref": multi_ref or bool(max_img_ov), "images": max_img_ov if max_img_ov is not None else base_images,
-            "images_stated": bool(refs.get("image") or max_img_ov),
+            "multi_ref": multi_ref, "images": (max_img_ov if max_img_ov is not None and multi_ref else base_images),
+            "images_stated": bool(refs.get("image") or (max_img_ov and multi_ref)),
             "prefer": plan.get("strategy"), "plan_images": None if max_img_ov is not None else plan.get("images"),
             "no_real_faces": bool(plan.get("no_real_faces")),
             "no_audio_with_ref_video": bool(plan.get("no_audio_with_ref_video")),
@@ -241,12 +241,13 @@ def is_discontinuous_montage(b: dict | None, gen_shot_ids: list[int], new_scene:
 def choose_strategy(spec: dict, n_own: int, override: str | None = None, video_ref: str | None = None,
                     discontinuous: bool = False) -> str:
     vref = (video_ref or "").strip().lower()
-    if override == "edit" and vref not in ("none", "depth", "edge") and (spec.get("edit_v2v") or spec.get("ref_video")):
+    if override == "edit" and vref not in ("none", "depth", "edge") and spec.get("edit_v2v"):
         return "edit"
-    if vref in ("depth", "edge") and (spec.get("control_video") or spec.get("ref_video")):
+    can_remix = spec["ref_video"] and spec["ref_total"] >= REMIX_MIN_REF_S
+    if vref in ("depth", "edge") and spec.get("control_video"):
         return "remix"
     if vref == "source":
-        if spec.get("ref_video"):
+        if can_remix:
             return "remix"
         if spec.get("edit_v2v"):
             return "edit"
@@ -254,7 +255,7 @@ def choose_strategy(spec: dict, n_own: int, override: str | None = None, video_r
         return "text"
     if override == "frames" and spec["first"]:
         return "frames"
-    if vref != "none" and override == "remix" and spec["ref_video"] and spec["ref_total"] >= REMIX_MIN_REF_S:
+    if vref != "none" and override == "remix" and can_remix:
         return "remix"
     if override == "keyframes" and spec["multi_shot"] and (spec["multi_ref"] or spec.get("pinned_keyframes")) and planned_images(spec) >= n_own + 1:
         return "keyframes"
@@ -263,11 +264,8 @@ def choose_strategy(spec: dict, n_own: int, override: str | None = None, video_r
         return "text"
     if pref == "frames" and spec["first"]:
         return "frames"
-    if vref != "none" and spec["ref_video"] and (spec["multi_shot"] or pref == "remix") and pref in (None, "remix") and spec["ref_total"] >= REMIX_MIN_REF_S:
+    if vref != "none" and can_remix and (spec["multi_shot"] or pref == "remix") and pref in (None, "remix"):
         return "remix"
-    # S01: disjoint multi-character montages without timestamp-pinned `video.keyframes` route to per-shot `frames` I2V
-    if discontinuous and not spec.get("pinned_keyframes") and spec["first"]:
-        return "frames"
     if spec["multi_shot"] and (spec["multi_ref"] or spec.get("pinned_keyframes")) and (pref in (None, "keyframes") or vref == "none") and planned_images(spec) >= n_own + 2:
         return "keyframes"
     if spec["multi_shot"] and not spec["multi_ref"] and n_own == 0:
@@ -909,17 +907,22 @@ def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[in
     gen_shot_ids = [r["index"] for r in b["shots"] if r["base"]["label"] in labels and r["index"] not in skip]
     discont = is_discontinuous_montage(b, gen_shot_ids, new_scene, own)
     strategy = choose_strategy(spec, len(own), intent.get("strategy"), video_ref=req_vref, discontinuous=discont)
-    eff_vref = "source" if strategy == "edit" else ((req_vref if req_vref in ("source", "depth", "edge") else "source") if strategy == "remix" else "none")
-    # Respect the model's real per-call duration limit: only apply a hardcut cap when the model entry explicitly sets max_hardcut_s
-    cap_hardcut = spec.get("max_hardcut_s")
+    eff_vref = "none"
+    if strategy == "edit":
+        eff_vref = "source"
+    elif strategy == "remix":
+        eff_vref = req_vref if req_vref in ("depth", "edge") and spec.get("control_video") else "source"
+    cap_hardcut = spec.get("max_hardcut_s") or hardcut_max_s
     if strategy in ("remix", "edit"):
         max_s, max_shots = min(spec["max"], spec["ref_total"]), (spec["shots"] if (spec["multi_shot"] or strategy == "edit") else 1)
     elif strategy == "keyframes":
+        # a swapped-in subject with no image is held only by its description: every extra call is another chance for it
+        # to come out different, so keep calls whole and let some shots go without a source frame; otherwise apply S06
         text_only = any(not s.get("image") for s in intent.get("swaps") or [])
-        max_s = spec["max"] if (text_only or not cap_hardcut) else min(spec["max"], cap_hardcut)
+        max_s = spec["max"] if text_only else min(spec["max"], cap_hardcut)
         max_shots = spec["shots"] if text_only else min(x for x in (spec["shots"], planned_images(spec) - len(own)) if x)
     elif strategy == "text" and spec["multi_shot"]:
-        max_s, max_shots = (min(spec["max"], cap_hardcut) if cap_hardcut else spec["max"]), spec["shots"]
+        max_s, max_shots = min(spec["max"], cap_hardcut), spec["shots"]
     else:
         max_s, max_shots = spec["max"], 1
     units: list[dict] = []
@@ -1089,13 +1092,13 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
             if plan.get("strategy") == "frames" else
             T("当前模型不接收参考图：提示词里只保留文字描述，需要严格锁外观时请换支持参考图或首帧的模型",
               "this model takes no reference images: only the text description is used; pick a model with reference images or first-frame input to lock appearance"))
+    want_vref = str(intent.get("video_ref") or "")
+    if want_vref in ("depth", "edge") and plan.get("video_ref") != want_vref:
+        add("warn", T("要求用{v}视频当参考，但这个模型不吃控制视频（video.control_video），这次没用；要用就换声明了 video.control_video 的模型",
+                      "a {v} control video was asked for, but this model takes no control video (video.control_video), so it was not used; pick a model that declares video.control_video",
+                      v=T("深度", "depth") if want_vref == "depth" else T("轮廓线", "edge")))
     for u in units:
         n_img, n_vid = len(unit_images(u)), len({r["tag"] for r in u["refs"] if r["tag"].startswith("@视频")})
-        if u.get("video_ref") in ("depth", "edge") and not spec.get("control_video"):
-            m_name = u.get("model_name") or u.get("model") or "?"
-            add("error", T("{u} 选了 {v} 控制视频，但 {m} 仅声明语义参考视频（video.reference_video），不支持像素级空间控制（video.control_video），会导致姿态朝向丢失、跨镜串色或灰阶污染：请改用 --strategy edit（原片动作锁定编辑）、--strategy frames（逐镜首尾帧锁构图），或换支持 video.control_video 的模型（如 wan-vace）",
-                           "{u} uses a {v} control video, but {m} only declares semantic reference video (video.reference_video), not pixel-aligned spatial control (video.control_video), causing pose drift, cross-shot bleed or grayscale wash: switch to --strategy edit, --strategy frames, or a video.control_video model (e.g. wan-vace)",
-                           u=u["id"], v=u.get("video_ref"), m=m_name), u["id"])
         if u.get("strategy") == "keyframes" and len(u.get("shots") or []) > 1 and not spec.get("pinned_keyframes") and plan.get("discontinuous_montage"):
             m_name = u.get("model_name") or u.get("model") or "?"
             add("warn", T("{u} 把多个无共享角色、跨场景的独立镜头合进了 {m} 的无时间戳多图池（video.multi_reference），容易跨镜头串角色或丢失首帧朝向：建议改用 --strategy frames 逐镜锁首尾帧，或改用 --strategy edit 锁原片动作",
@@ -1297,15 +1300,13 @@ def image_tasks_md(tasks: list[dict], strategy: str) -> list[str]:
     """Markdown block for the upstream still-image layer (Text-to-Image vs Image-to-Image + reverse-engineered prompts + refs)."""
     if not tasks:
         return []
-    note = (T("当前视频模态为首帧/首尾帧图生视频：先按下表逐张生成画面帧，再喂入视频模型跑纯动态。",
-              "Video modality is first/last-frame I2V: generate the still frames below first, then feed them into the video model with motion-only prompts.")
+    note = (T("先按下表做好每个镜头的画面，再拿去图生视频。", "Make each shot's frame below first, then run image-to-video from it.")
             if strategy == "frames" else
-            T("如果不直接喂原片画面、而是要做全新角色/换主体或改走逐镜图生视频，按下表准备每镜首帧图（已区分文生图与图生图，并给出反推生图提示词与参考图）：",
-              "When generating fresh visuals, swapping subjects, or running shot-by-shot I2V instead of feeding raw source frames, prepare each shot's frame as below (T2I vs I2I, reverse-engineered image prompts and reference files):"))
-    L = ["", "<details><summary>" + T("前置图片准备与反推提示词（文生图 / 图生图，共 {n} 张）",
-                                      "Upstream image preparation and reverse-engineered prompts (T2I / I2I, {n} images)", n=len(tasks)) + "</summary>", "",
+            T("要换人、换物或改成逐镜图生视频时，按下表准备每个镜头的首帧图：",
+              "When swapping people or products, or switching to shot-by-shot image-to-video, prepare each shot's first frame as below:"))
+    L = ["", "<details><summary>" + T("先做的图（{n} 张）", "Frames to make first ({n})", n=len(tasks)) + "</summary>", "",
          note, "",
-         T("| 镜头 | 用途 | 生图方式 | 参考图输入 | 产出保存路径 |", "| Shot | Role | Image modality | Reference inputs | Save as |"),
+         T("| 镜头 | 用途 | 怎么做 | 参考图 | 存成 |", "| Shot | Role | How | Reference images | Save as |"),
          "|---|---|---|---|---|"]
     for t in tasks:
         refs_s = semi().join(t.get("refs") or []) or "—"
@@ -1329,37 +1330,33 @@ def report_md(plan: dict, prompts: dict[str, str]) -> list[str]:
     st = plan.get("strategy")
     vref = plan.get("video_ref") or rules.get("video_ref") or ("source" if st in ("remix", "edit") else "none")
     remix_how = {
-        "depth": T("把原片转为灰度深度控制视频（`depth.mp4`）传入，模型照它的三维空间纵深、运镜轨迹与切镜节奏生成，外观材质与色彩完全按参考图与提示词重绘（需模型支持 `video.control_video`；可用 `--video-ref none|source|edge` 切换）",
-                   "feeds a grayscale depth control video (`depth.mp4`) so the model follows 3D spatial depth, camera and cut timing while redrawing full look and colour (requires `video.control_video`; switch with `--video-ref none|source|edge`)"),
-        "edge": T("把原片转为结构软边缘控制视频（`edge.mp4`）传入，模型照它的轮廓构图、运镜与节奏生成，外观材质与光影完全重绘（需模型支持 `video.control_video`；可用 `--video-ref none|source|depth` 切换）",
-                  "feeds a structural edge control video (`edge.mp4`) so the model follows silhouette layout, camera and pacing while redrawing full look and lighting (requires `video.control_video`; switch with `--video-ref none|source|depth`)"),
-        "source": T("这段原片擦掉字幕后直接当参考视频，模型照它的分镜、运镜和节奏一次出完这段的镜头（可用 `--strategy edit` 切为极简增量动作锁定编辑，或 `--video-ref none` 不传原视频）",
-                    "the source stretch, subtitles erased, is the reference video; the model follows its shots, camera and pacing in one go (pass `--strategy edit` for motion-locked delta editing, or `--video-ref none` for no reference video)"),
+        "depth": T("原片转成深度视频当参考，模型照它的空间、运镜和切镜节奏出画面，外观和颜色按参考图和提示词重画",
+                   "a depth video of the source is the reference: the model follows its space, camera and cut timing, and redraws look and colour from the images and prompt"),
+        "edge": T("原片转成轮廓线视频当参考，模型照它的构图、运镜和节奏出画面，外观和光影按参考图和提示词重画",
+                  "an edge video of the source is the reference: the model follows its framing, camera and pacing, and redraws look and lighting from the images and prompt"),
+        "source": T("这段原片擦掉字幕后当参考视频，模型照它的分镜、运镜和节奏一次出完这段的镜头",
+                    "the source stretch, subtitles erased, is the reference video; the model follows its shots, camera and pacing in one go"),
     }.get(vref)
-    how = {"edit": T("把擦掉字幕的原片作为基准视频，配极简增量编辑提示词（仅声明要改的外观/属性，显式锁死原片切镜、运镜、主体朝向与动作姿态，避免模型推翻原动作重演）",
-                     "feeds the subtitle-erased source clip with a delta-only edit prompt (states only visual attribute/subject changes while locking cuts, camera trajectory, orientation and poses)"),
+    how = {"edit": T("擦掉字幕的原片当底片，提示词只写要改的地方，切镜、运镜和动作都照原片",
+                     "the subtitle-erased source is the base video; the prompt states only what changes, cuts, camera and action stay as in the source"),
            "remix": remix_how,
-           "keyframes": (T("这个模型也能吃参考视频，这里按不传原视频的多图关键帧排法（可用 `--strategy edit` 或 `--video-ref source` 切为原视频参考）：",
-                           "the model also takes reference video; using multi-shot keyframes without reference video here (pass `--strategy edit` or `--video-ref source` for video reference): ")
+           "keyframes": (T("这个模型也能吃参考视频，这里用多张关键帧图：", "the model also takes reference video, but key frames are used here: ")
                          if spec.get("ref_video") else T("这个模型不吃参考视频，", "the model takes no reference video: "))
-                        + T("每个镜头给一张关键帧图定构图/外观，换进去的东西各给参考图",
-                            "one keyframe image per shot fixes composition/look, swapped-in things get their own images"),
-           "frames": T("一次出一个镜头，先用文生图/图生图做好首帧（及尾帧），再配纯动态提示词图生视频",
-                       "one shot per call: prepare the first (and last) frame via T2I/I2I, then run image-to-video with a motion-only prompt"),
-           "text": T("纯文字提示词直接文生视频", "text-to-video from prompt only")}[st]
-    notes_md = [T("- 视频生成模态：{m}（参考形式：{v}）", "- Video modality: {m} (video reference: {v})", m=strategy_name(st), v=video_ref_name(vref)),
-                T("- 可选参考形式切换：`--video-ref none`（不传原视频）/ `source`（原视频直接参考）/ `depth`（深度视频参考）/ `edge`（边缘结构视频参考）；前置生图可用 `--image-ref none|source|depth|edge` 控制",
-                  "- Switch reference regime: `--video-ref none` (no source video) / `source` (raw source video) / `depth` (depth video) / `edge` (edge video); control still generation with `--image-ref none|source|depth|edge`"),
-                T("- 分组：按模型真实单次上限（≤{s:.0f} 秒", "- Grouping: packed up to the model's real per-call limit (≤{s:.0f}s", s=rules.get("max_s") or 0)
+                        + T("每个镜头给一张关键帧图定构图和外观，换进去的东西各给参考图",
+                            "one key frame per shot fixes composition and look, swapped-in things get their own images"),
+           "frames": T("一次出一个镜头：先做好首帧（和尾帧），提示词只写动作和运镜",
+                       "one shot per call: make the first (and last) frame first, then a prompt with only motion and camera"),
+           "text": T("只有文字提示词", "prompt only")}[st]
+    notes_md = [T("- 分组：连着的镜头尽量放进同一次生成，单次 ≤{s:.0f} 秒", "- Grouping: consecutive shots share a call where they fit, ≤{s:.0f}s per call", s=rules.get("max_s") or 0)
                 + (T("、≤{n} 个镜头", ", ≤{n} shots", n=rules["max_shots"]) if rules.get("max_shots") else "")
-                + T("）合并，能一次生成的绝不拆碎；超长时优先在叙事段落或换景处切开", "), keeping stretches in one call whenever they fit; longer stretches cut at story seams or scene changes"),
+                + T("；段太长时优先在换场景处切开", "; a long stretch is cut at a scene change first"),
                 T("- 输入：{h}", "- Inputs: {h}", h=how)]
     if plan.get("audio_note"):
         notes_md.append(T("- 声音：{a}", "- Audio: {a}", a=plan["audio_note"]))
     if plan.get("overlay_note"):
         notes_md.append(T("- 包装层：{a}", "- Packaging: {a}", a=plan["overlay_note"]))
-    L = [T("- **视频生成方式**：{m}", "- **Video modality**: {m}", m=strategy_name(st)), "",
-         T("| 段 | 镜头 | 时间 | 时长 | 视频模型输入 |", "| Part | Shots | Time | Length | Video model inputs |"), "|---|---|---|---|---|"]
+    L = [T("- **生成方式**：{m}", "- **How it is generated**: {m}", m=strategy_name(st)), "",
+         T("| 段 | 镜头 | 时间 | 时长 | 要准备 |", "| Part | Shots | Time | Length | Prepare |"), "|---|---|---|---|---|"]
     for u in units:
         when = join(f"{a:.1f}–{z:.1f}s" for a, z in u["ranges"])
         call = u.get("call_s") or u["generate_s"]
@@ -1367,7 +1364,7 @@ def report_md(plan: dict, prompts: dict[str, str]) -> list[str]:
                   if call - u["generate_s"] >= 0.5 else f"{u['duration']:.1f}s")
         L.append(f"| {u['id']} | {shot_ids(u['shots'])} | {when} | {length}"
                  f"{T('（{c} 次）', ' ({c} calls)', c=u['calls']) if u['calls'] > 1 else ''} | {_fed(u) or T('纯文本提示词', 'text prompt')} |")
-    L += ["", '<details class="ref"><summary>' + T("模态选择与分段依据", "Modality choice and grouping basis") + "</summary>", ""] + notes_md + ["", "</details>"]
+    L += ["", '<details class="ref"><summary>' + T("这样分段的原因", "Why it is split this way") + "</summary>", ""] + notes_md + ["", "</details>"]
     L += image_tasks_md(plan.get("image_tasks") or [], st)
     for u in units:
         L += ["", "<details><summary>" + T("{id} · 镜头 {sh} · {d:.1f}s", "{id} · shots {sh} · {d:.1f}s",
