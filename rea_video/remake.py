@@ -459,8 +459,8 @@ def _next_step(sh: dict, plan: dict | None = None) -> str:
     if lab == "film_footage":
         return T("影视片段：找到原片对应片段（有版权），或换成自己拍的", "film clip: find it in the source (rights apply) or shoot your own")
     if lab == "code_render":
-        return T("代码渲染：交给 HTML 视频框架（如 HyperFrames）按 video/rhythm.md 的节奏和关键帧重做，做好的片段写进 mine.json；要快速草稿加 --code",
-                 "code render: rebuild it in an HTML video framework (such as HyperFrames) from the rhythm and key frames in video/rhythm.md "
+        return T("代码渲染：让编程能力强的模型按 video/rhythm.md 的节奏和关键帧写代码重做（可参考 HyperFrames、Remotion），做好的片段写进 mine.json；要快速草稿加 --code",
+                 "code render: have a strong coding model rebuild it in code (HyperFrames or Remotion can help) from the rhythm and key frames in video/rhythm.md "
                  "and add the clip to mine.json; --code makes a quick draft")
     return T("提供素材", "provide the footage") + tail
 

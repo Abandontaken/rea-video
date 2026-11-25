@@ -642,11 +642,11 @@ def report_md(plan: dict) -> list[str]:
             L.append("")
     if plan["code"]:
         L += ["", T("### 代码合成", "### Code composition"), "",
-              T("用 HTML 视频框架（如 HyperFrames、Remotion）重做一个工程：切点、转场和每镜关键帧照「节奏与关键帧」，版式、配色和元素照下面的场景；"
-                "文字、界面 100% 可控，改文案只改数据，可以让 AI 编程助手直接写。",
-                "Rebuild it as one project in an HTML video framework (such as HyperFrames or Remotion): cuts, transitions and each shot's key "
+              T("让编程能力强的模型（如 Claude Opus 5.5 及以上、Gemini 4 系列）写代码重做成一个工程，可以参考 HyperFrames、Remotion 这类 HTML 视频框架：切点、转场和每镜关键帧照「节奏与关键帧」，版式、配色和元素照下面的场景；"
+                "文字、界面 100% 可控，改文案只改数据。",
+                "Have a strong coding model (such as Claude Opus 5.5 or later, or the Gemini 4 series) rebuild it in code as one project, optionally on an HTML video framework such as HyperFrames or Remotion: cuts, transitions and each shot's key "
                 "frames from \"Rhythm and key frames\", layout, colours and elements from the scenes below. Text and UI are 100% controllable, "
-                "changing copy is a data change, and an AI coding assistant can write the project."), "",
+                "changing copy is a data change."), "",
               T("`rea-video code-remake <拆解目录>` 只出一版快速草稿：按每个场景的采样点 / 抠图、运动和背景光渲染出 `code/remake.mp4` 并打分。"
                 "粒子、点云、数据可视化这类暗底图形能接近原片；插画角色的动作和形变转场出不来。",
                 "`rea-video code-remake <breakdown folder>` only makes a quick draft: it renders `code/remake.mp4` from each scene's sampled "

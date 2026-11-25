@@ -434,9 +434,9 @@ def _next_steps(b: dict) -> list[str]:
                "Remake: Capsule Cinema does the generation, assembly and checks. `rea-video remake <this dir>` hands over to it, does what can be done automatically and keeps the original elsewhere; `remake/status.md` "
                "says per shot what is left. Add incoming clips to `remake/mine.json` and run it again"))
     if "code_render" in labels:
-        L.append(T("代码渲染镜头建议交给 HTML 视频框架（如 HyperFrames）按 `video/rhythm.md` 的节奏和关键帧重做；"
+        L.append(T("代码渲染镜头建议让编程能力强的模型（如 Claude Opus 5.5 及以上、Gemini 4 系列）按 `video/rhythm.md` 的节奏和关键帧写代码重做，可以参考 HyperFrames、Remotion；"
                    "`rea-video code-remake <本目录>` 只出粒子 / 数据可视化这类画面的快速草稿",
-                   "Code-rendered shots are best rebuilt in an HTML video framework (such as HyperFrames) from the rhythm and key frames in "
+                   "Code-rendered shots are best rebuilt in code by a strong coding model (such as Claude Opus 5.5 or later, or the Gemini 4 series), optionally on HyperFrames or Remotion, from the rhythm and key frames in "
                    "`video/rhythm.md`; `rea-video code-remake <this dir>` only makes a quick draft for particles / data-visualisation pictures"))
     mo = b.get("moments") or {}
     if mo.get("status") == "pending" and mo.get("genre") in ("magic", "drama"):  # other videos: only when the user asks

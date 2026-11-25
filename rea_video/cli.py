@@ -1011,7 +1011,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rm = sub.add_parser("remake", help="交给 Capsule Cinema 出复刻：静图按运动重建（代码渲染镜头默认原片占位，加 --code 出快速草稿）、已生成 / 你给的镜头剪进去，其余原片占位；输出成片、对比视频和逐镜进度（remake/status.md）")
     rm.add_argument("out_dir", help="decompose 的输出目录")
-    rm.add_argument("--code", action="store_true", help="用 code-remake 给代码渲染镜头出快速草稿（粒子 / 数据可视化类画面接近原片；插画动画建议交给 HyperFrames 等 HTML 视频框架）")
+    rm.add_argument("--code", action="store_true", help="用 code-remake 给代码渲染镜头出快速草稿（粒子 / 数据可视化类画面接近原片；插画动画建议让编程能力强的模型写代码重做，可参考 HyperFrames、Remotion）")
     rm.add_argument("--no-overlays", action="store_true", help="换掉的镜头上不叠回字幕 / 花字")
     rm.add_argument("--capsule-root", help="capsule-cinema 仓库；默认 $CAPSULE_CINEMA_ROOT、prefs capsule_root，再退到 ~/code/github/capsule-cinema")
     rm.set_defaults(func=cmd_remake)

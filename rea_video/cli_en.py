@@ -92,7 +92,7 @@ HELP = {
 
     "remake": "remake through Capsule Cinema: rebuild stills from their motion (code-rendered shots keep the original unless --code), cut in generated or supplied shots, keep the original elsewhere; writes the video, a comparison and per-shot progress (remake/status.md)",
     "remake.out_dir": _OUT_DIR,
-    "remake.code": "draft code-rendered shots with code-remake (close for particles / data visuals; for illustrated animation use an HTML video framework such as HyperFrames)",
+    "remake.code": "draft code-rendered shots with code-remake (close for particles / data visuals; for illustrated animation have a strong coding model write it, optionally on HyperFrames or Remotion)",
     "remake.no_overlays": "do not put captions / styled text back on replaced shots",
     "remake.capsule_root": _CAPSULE_ROOT,
 

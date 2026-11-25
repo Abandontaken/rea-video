@@ -138,7 +138,7 @@ rea-video assemble out/ref/breakdown.json out/ref/remake/results.json --overlays
 
 Other shot types:
 
-- **Code-rendered shots:** rebuild them with an HTML video framework, or run `rea-video code-remake out/ref` for a quick draft.
+- **Code-rendered shots:** have a strong coding model (such as Claude Opus 5.5 or later, or the Gemini 4 series) rebuild them in code, optionally on HyperFrames or Remotion, or run `rea-video code-remake out/ref` for a quick draft.
 - **Dance and action shots:** run `rea-video drive out/ref`, generate from the driving videos, then run `rea-video drive out/ref --join`.
 
 Remake options:
@@ -147,7 +147,7 @@ Remake options:
 |---|---|---|
 | [capsule-cinema](https://github.com/JuneYaooo/capsule-cinema) | Open-source local generation pipeline that works directly with `remake-plan` and `remake-run` | Local setup with your own models and keys; billed per model call |
 | [ChatCut](https://chatcut.io/r/github-e4rd?utm_content=skill_reply) (rea-video sponsor) | AI video editor with desktop (macOS / Windows) and web versions that can remake a reference video on one timeline | Account required, no model setup. Regular editing uses your existing agent subscription; generating AI video or images needs a ChatCut membership and uses credits; remaking a reference video needs the desktop version |
-| [HyperFrames](https://github.com/heygen-com/hyperframes) | Open-source HTML video framework for rebuilding code-rendered and motion-graphics shots | Node.js 22 or later; the framework is free (Apache-2.0), and its Studio app has paid plans |
+| Rebuild in code | A strong coding model (such as Claude Opus 5.5 or later, or the Gemini 4 series) writes the animation code for code-rendered and motion-graphics shots; open-source frameworks such as [HyperFrames](https://github.com/heygen-com/hyperframes) and [Remotion](https://www.remotion.dev) can help | Billed by the model or agent subscription you use; the frameworks are free (Remotion needs a licence for company use) and need Node.js |
 | Do it yourself | Shoot and edit yourself, or generate by hand on another platform, following the report's shooting plan and shot list | rea-video is free; other platforms charge their own fees |
 
 More detail: [replicate.md](replicate.md), [capsule-cinema.md](capsule-cinema.md).
