@@ -22,7 +22,7 @@ import numpy as np
 
 from ..i18n import T, semi
 
-from .base import (FILMED, PHOTOGRAPHIC, Aspect, Field, ShotCtx, field_table, mode_seen, register, seen, video_seen,
+from .base import (OWN_FILMED, Aspect, Field, ShotCtx, field_table, filmed_shots, mode_seen, register, seen, video_seen,
                    weighted_median, weighted_mode)
 
 MEASURES = ("ratio", "top_bottom", "transition", "subject_luma", "bg_luma", "dark_share", "warmth", "bg_warmth", "bg_blur", "point_lights",
@@ -328,9 +328,9 @@ class Lighting(Aspect):
         return {**w, "setup": st.get("key"), "setup_name": st.get("name")}
 
     def summarize(self, shots: list[dict], b: dict) -> dict:
-        filmed = [r for r in shots if r["base"]["label"] in FILMED]
-        main = [r for r in (filmed or [r for r in shots if r["base"]["label"] in PHOTOGRAPHIC])
-                if ((r.get("aspects") or {}).get(self.key) or {}).get("measured", {}).get("ratio") is not None]
+        own = [r for r in shots if r["base"]["label"] in OWN_FILMED]
+        pool = filmed_shots(shots, b)
+        main = [r for r in pool if ((r.get("aspects") or {}).get(self.key) or {}).get("measured", {}).get("ratio") is not None]
         if not main:
             return {}
         ms = [(r["aspects"][self.key]["measured"], r["duration"]) for r in main]
@@ -345,11 +345,11 @@ class Lighting(Aspect):
         lines = [T("打光：{n}。主光 {k}，{v}；光比 {r}；{q}；色温{c}", "Lighting: {n}. Key light {k}, {v}; lighting ratio {r}; {q}; colour temperature {c}",
                    n=st["name"], k=w["key_direction"], v=w["vertical"], r=w["ratio"], q=w["quality"], c=w["color_temp"])
                  + (semi() + semi().join(st["notes"]) if st.get("notes") else "")]
-        if not filmed:
-            lines.append(T("（画面不是实拍：以上是画面里的光影，用于写生成提示词，不是拍摄方案）",
-                           "(not live footage: the above describes the light in the picture, for generation prompts, not a shooting plan)"))
+        if not own:
+            lines.append(T("（原片非实拍：以上按画面光影反推真机实拍布光方案）",
+                           "(source is not live footage: lighting setup translated from the picture for a live shoot)"))
         return {"result": {"setup": st["key"]}, "measured": {k: (round(v, 3) if isinstance(v, float) else v) for k, v in med.items()},
-                "words": w, "setup": st, "filmed": bool(filmed), "lines": lines,
+                "words": w, "setup": st, "filmed": True, "lines": lines,
                 "fields": field_table(self, main, b, {"light_quality": w["quality"], "color_temp": w["color_temp"]})}
 
 

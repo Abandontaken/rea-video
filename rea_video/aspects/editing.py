@@ -12,7 +12,7 @@ import numpy as np
 
 from ..i18n import T, semi
 
-from .base import FILMED, Aspect, Field, ShotCtx, field_table, register
+from .base import Aspect, Field, ShotCtx, field_table, filmed_shots, register
 
 SAME_POSITION = 18.0  # mean |diff| of 0..255 BGR cells of the 6x10 background layout
 
@@ -62,15 +62,13 @@ class Editing(Aspect):
 
     def summarize(self, shots: list[dict], b: dict) -> dict:
         total = sum(r["duration"] for r in shots) or 1.0
-        filmed = [r for r in shots if r["base"]["label"] in FILMED]
+        filmed = filmed_shots(shots, b)
         f_dur = sum(r["duration"] for r in filmed)
+        if not filmed or f_dur <= 0:
+            return {}
+        filmed_ids = {r["index"] for r in filmed}
         out = {"cuts_per_min": round(max(0, len(shots) - 1) / (total / 60), 1), "avg_shot_s": round(total / max(1, len(shots)), 2),
                "filmed_share": round(f_dur / total, 3), "insert_share": round(1 - f_dur / total, 3)}
-        if not filmed or f_dur <= 0:
-            out["lines"] = [T("剪辑：每分钟 {c} 刀，平均镜头 {a}s；没有实拍镜头", "Editing: {c} cuts per minute, {a}s average shot; no live-action shots",
-                              c=out["cuts_per_min"], a=out["avg_shot_s"])]
-            out["result"] = {}
-            return out
         centers: list[list[float]] = []
         pos = {}
         for r in filmed:
@@ -89,7 +87,7 @@ class Editing(Aspect):
         jump = punch = in_gap = joins = 0
         voice = ((b.get("audio") or {}).get("voice") or {}).get("segments") or []
         for prev, cur in zip(shots, shots[1:]):
-            if prev["base"]["label"] not in FILMED or cur["base"]["label"] not in FILMED:
+            if prev["index"] not in filmed_ids or cur["index"] not in filmed_ids:
                 continue
             joins += 1
             if voice and _in_gap(cur["start"], voice):

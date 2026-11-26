@@ -397,6 +397,15 @@ def _capsule_command(args, argv: list[str]) -> int:
 
 def cmd_remake_run(args) -> int:
     jobs = Path(args.jobs).expanduser().resolve()
+    try:
+        eng = str((json.loads(jobs.read_text(encoding="utf-8")) or {}).get("engine") or "")
+    except (OSError, ValueError):
+        eng = ""
+    if eng in ("gemini-omni-flash", "veo-3.1"):
+        root = _capsule_root(args)
+        argv = ["--jobs", str(jobs), "--capsule-root", str(root)]
+        argv += (["--only", args.only] if args.only else []) + (["--dry-run"] if args.dry_run else [])
+        return _run_integration("run_remake.py", _capsule_python(args.python, root), argv)
     return _capsule_command(args, ["run", str(jobs)] + (["--only", args.only] if args.only else []) + (["--dry-run"] if args.dry_run else []))
 
 
@@ -412,8 +421,28 @@ def cmd_capsule_draft(args) -> int:
 
 
 def cmd_assemble(args) -> int:
-    pkg = Path(args.breakdown).expanduser().resolve().parent
-    argv = ["assemble", str(pkg), "--results", str(Path(args.results).expanduser().resolve())]
+    bpath = Path(args.breakdown).expanduser().resolve()
+    pkg = bpath.parent
+    rpath = Path(args.results).expanduser().resolve()
+    retime = getattr(args, "retime", "smooth") or "smooth"
+    if retime == "smooth":
+        from .memory import capsule_root
+        from .remake import assemble as local_assemble
+
+        out_dir = Path(args.out).expanduser().resolve() if args.out else rpath.parent
+        mine = out_dir / "mine.json"
+        extra = read_json(mine).get("results", {}) if mine.is_file() else {}
+        code_v = pkg / "code" / "remake.mp4"
+        log_txt = local_assemble(bpath, rpath, out_dir=out_dir, overlays=bool(args.overlays),
+                                 code_video=code_v if code_v.is_file() else None, extra=extra, retime="smooth")
+        print(log_txt)
+        log = json.loads(log_txt)
+        root = capsule_root(getattr(args, "capsule_root", None))
+        if (root / "scripts" / "remake_reference.py").is_file() and Path(log["remake"]).is_file():
+            return _capsule_command(args, ["compare", str(pkg), str(log["remake"]), "--remake-video", str(log["remake"]),
+                                           "-o", str(Path(log["remake"]).parent / "qa")])
+        return 0
+    argv = ["assemble", str(pkg), "--results", str(rpath)]
     argv += ["-o", str(Path(args.out).expanduser().resolve())] if args.out else []
     return _capsule_command(args, argv + ([] if args.overlays else ["--no-overlays"]))
 
@@ -430,7 +459,9 @@ def cmd_tiles(args) -> int:
     if args.every <= 0:
         raise SystemExit(U("rea-video: --every 必须大于 0（两次抽帧的间隔秒数）", "rea-video: --every must be greater than 0 (seconds between frames)"))
     if Path(args.video).is_dir() and (Path(args.video) / "breakdown.json").is_file():
-        args.video = read_json(Path(args.video) / "breakdown.json")["source"]["path"]  # a package: its source video
+        pkg_dir = Path(args.video)
+        sp = Path(read_json(pkg_dir / "breakdown.json")["source"]["path"])
+        args.video = str(pkg_dir / sp if not sp.is_absolute() and (pkg_dir / sp).is_file() else sp)  # a package: its source video
     if args.start < 0:
         raise SystemExit(U("rea-video: --start 不能小于 0", "rea-video: --start cannot be negative"))
     if args.cols < 1:
@@ -509,13 +540,24 @@ def cmd_frames(args) -> int:
 
 
 def cmd_compare(args) -> int:
+    for p in (args.ref, args.remake):
+        if not Path(p).is_file():
+            raise SystemExit(U(f"rea-video: 找不到 {p}", f"rea-video: not found: {p}"))
+    if getattr(args, "breakdown", None):
+        from .remake_qa import evaluate_remake
+
+        bp = Path(args.breakdown)
+        if not bp.is_file():
+            raise SystemExit(U(f"rea-video: 找不到 {bp}", f"rea-video: not found: {bp}"))
+        b = read_json(bp)
+        b = {**b, "source": {**(b.get("source") or {}), "path": str(Path(args.ref).resolve())}}
+        qa = evaluate_remake(b, args.remake, out_dir=Path(args.out) if args.out else None, replaced_only=False)
+        print(json.dumps(qa, ensure_ascii=False, indent=1))
+        return 0
     from .layers import compare
 
     if args.every <= 0:
         raise SystemExit(U("rea-video: --every 必须大于 0", "rea-video: --every must be greater than 0"))
-    for p in (args.ref, args.remake):
-        if not Path(p).is_file():
-            raise SystemExit(U(f"rea-video: 找不到 {p}", f"rea-video: not found: {p}"))
     res = compare(args.ref, args.remake, every=args.every, out=Path(args.out) if args.out else None,
                   scenes=Path(args.scenes) if args.scenes else None, worst=args.worst)
     brief = {k: res[k] for k in ("score", "place", "shape", "offset", "advice", "worst") if k in res}
@@ -736,8 +778,37 @@ def cmd_plan(args) -> int:
     intent = load_intent(out)
     if args.model:
         intent["model"] = args.model
-    if args.generate:
+    if getattr(args, "mode", None):
+        intent["mode"] = args.mode
+        intent["generate"] = "all" if args.mode == "ai" else ("none" if args.mode == "shoot" else "ai")
+    elif args.generate:
         intent["generate"] = args.generate
+        intent["mode"] = "ai" if args.generate == "all" else "match"
+    if getattr(args, "strategy", None):
+        if args.strategy == "auto":
+            intent.pop("strategy", None)
+        else:
+            intent["strategy"] = args.strategy
+    if getattr(args, "video_ref", None):
+        if args.video_ref == "auto":
+            intent.pop("video_ref", None)
+        else:
+            intent["video_ref"] = args.video_ref
+    if getattr(args, "image_ref", None):
+        if args.image_ref == "auto":
+            intent.pop("image_ref", None)
+        else:
+            intent["image_ref"] = args.image_ref
+    if getattr(args, "max_images", None) is not None:
+        if args.max_images <= 0:
+            intent.pop("max_images", None)
+        else:
+            intent["max_images"] = int(args.max_images)
+    if getattr(args, "max_ref_video_s", None) is not None:
+        if args.max_ref_video_s <= 0:
+            intent.pop("max_ref_video_s", None)
+        else:
+            intent["max_ref_video_s"] = float(args.max_ref_video_s)
     if not intent.get("model"):
         from .generation import DEFAULT_MODEL
         from .memory import pref
@@ -774,7 +845,9 @@ def cmd_plan(args) -> int:
         plan = b.get("production_plan") or {}
         print(T("已按 {m} 的写法自动重写 {n} 段提示词 → {f}", "Rewrote {n} unit prompt(s) for {m} → {f}",
                 m=m["id"], n=len(rewritten), f=out / "remake" / "prompts.json"))
-    n = sum(len(ref_clips(b, out, u)) for u in plan.get("units") or [])
+    from .integrations.capsule_cinema import image_ref_frames
+
+    n = sum(len(ref_clips(b, out, u)) for u in plan.get("units") or []) + len(image_ref_frames(b, out, plan))
     v = m.get("verified") or {}
     print(T("复刻方案已按 {m} 重出（报告第二部分）：{p}", "Remake plan redone for {m} (part two of the report): {p}",
             m=m["id"], p=b["summary"].get("production", "")))
@@ -978,6 +1051,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--capsule-root", help="capsule-cinema 仓库；默认 $CAPSULE_CINEMA_ROOT、prefs capsule_root，再退到 ~/code/github/capsule-cinema")
     a.add_argument("--overlays", action="store_true",
                    help="把测得的字幕 / 花字 / 标题按原样式叠回换掉的镜头（保留原片的镜头本来就有）；贴纸只列出来，要自己找素材")
+    a.add_argument("--retime", choices=["smooth", "warp"], default="smooth",
+                   help="时间对齐方式：smooth 均匀连续帧混合重采样、零冻结帧（默认）/ warp 离散运动峰值动态时间规整")
     a.set_defaults(func=cmd_assemble)
 
     t = sub.add_parser("tiles", help="按时间抽帧拼图，近距离检查某一段（agent 复核用）")
@@ -1000,9 +1075,10 @@ def main(argv: list[str] | None = None) -> int:
     fr.add_argument("--all", action="store_true", help="所有镜头都做，不只是代码渲染镜头")
     fr.set_defaults(func=cmd_frames)
 
-    cp = sub.add_parser("compare", help="逐帧比较复刻和原片画上去的那一层（落在哪、形状重合度、多少），列出最差的时刻并拼对比图")
+    cp = sub.add_parser("compare", help="比较复刻成片与原片：默认比对代码图形层，传 --breakdown 时逐镜评测运镜、姿态动态、构图与流畅度")
     cp.add_argument("ref", help="原片")
     cp.add_argument("remake", help="复刻成片")
+    cp.add_argument("--breakdown", help="breakdown.json：按镜头评测生成式复刻的运镜方向、主体姿态动态、构图轮廓与冻结帧")
     cp.add_argument("--every", type=float, default=0.5, help="采样间隔秒数（默认 0.5）")
     cp.add_argument("--scenes", help="frames/scenes.json：按场景汇总分数")
     cp.add_argument("--worst", type=int, default=8, help="对比图里放几个最差时刻（默认 8）")
@@ -1092,6 +1168,12 @@ def main(argv: list[str] | None = None) -> int:
     pl_ = sub.add_parser("plan", help="按用户要用的视频模型出复刻方案（报告第二部分）；拆解结果不变")
     pl_.add_argument("out_dir", help="拆解目录")
     pl_.add_argument("--model", help="模型 id 或名称，写进 remake/intent.yaml（rea-video models 列出的；没有的先查资料补进 ~/.rea-video/capabilities/models/）")
+    pl_.add_argument("--mode", choices=["match", "ai", "shoot"], help="复刻方式：match 按原片方式复刻（默认）/ ai 整条改用 AI 生成 / shoot 整条改按真机实拍规划")
+    pl_.add_argument("--strategy", choices=["auto", "edit", "remix", "keyframes", "frames", "text"], help="AI 视频生成模态：auto 按模型能力自动选（默认）/ edit 原片动作锁定增量编辑 / remix 参考视频多模态 / keyframes 多图关键帧 / frames 首尾帧图生视频 / text 纯文生视频")
+    pl_.add_argument("--video-ref", choices=["auto", "none", "source", "depth", "edge"], help="原视频参考形式：auto 自动（默认）/ none 不传原视频 / source 原视频直接参考 / depth 灰度深度视频参考 / edge 结构边缘视频参考")
+    pl_.add_argument("--image-ref", choices=["auto", "none", "source", "depth", "edge"], help="前置生图参考形式：auto 自动（默认）/ none 纯文生图 / source 原片首帧垫图参考 / depth 深度图参考 / edge 边缘图参考")
+    pl_.add_argument("--max-images", type=int, help="覆盖实际执行渠道单次参考图上限（如聚合渠道支持 14 张时传 14；传 0 恢复能力地图默认值）")
+    pl_.add_argument("--max-ref-video-s", type=float, help="覆盖实际执行渠道单次参考视频总秒数上限（如聚合渠道支持 15 秒时传 15；传 0 恢复默认值）")
     pl_.add_argument("--generate", choices=["ai", "all"], help="ai：只生成原片里 AI 做的镜头，实拍的出拍摄方案；all：整条都用模型生成（换人、换物后整条复刻）")
     pl_.add_argument("--rewrite-prompts", action="store_true", help="用已配置的大模型（GEMINI_API_KEY 或 REA_VLM_*）按所选模型的提示词指南自动重写每段提示词，校验后写入 remake/prompts.json")
     pl_.set_defaults(func=cmd_plan)

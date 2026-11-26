@@ -11,11 +11,11 @@ import json
 from ..i18n import T, semi
 
 from . import framing, camera, lighting, grade, editing, fmt  # noqa: F401  (registration order matters)
-from .base import FILMED, PHOTOGRAPHIC, REGISTRY, ShotCtx, get
+from .base import FILMED, OWN_FILMED, PHOTOGRAPHIC, REGISTRY, ShotCtx, get
 from .subject import subject
 
-__all__ = ["REGISTRY", "measure_shot", "finalize", "prompt_block", "review_template", "review_guide", "clean_answers",
-           "summary_lines", "check", "shot_text", "report_md", "report_html", "shooting_plan"]
+__all__ = ["REGISTRY", "OWN_FILMED", "PHOTOGRAPHIC", "measure_shot", "finalize", "prompt_block", "review_template", "review_guide", "clean_answers",
+           "summary_lines", "check", "shot_text", "visual_shot_text", "report_md", "report_html", "shooting_plan"]
 
 
 # ---------------------------------------------------------------- per shot ---------------------------------------
@@ -152,6 +152,17 @@ def shot_text(r: dict, brief: bool = False) -> str:
     parts = [fr.get("shot_size"), fr.get("camera_angle"), cam.get("support_zh"),
              li.get("setup_name"), li.get("key_direction") and T("主光{k}", "key light {k}", k=li["key_direction"]),
              li.get("ratio") and T("光比{r}", "lighting ratio {r}", r=li["ratio"]), li.get("quality")]
+    return semi().join(p for p in parts if p)
+
+
+def visual_shot_text(r: dict) -> str:
+    """Visual composition and light mood for non-filmed shots (AI, 3D, animation, film): no gimbal / rig / fill-lamp talk."""
+    asp = r.get("aspects") or {}
+    fr, cam, li, gr = ((asp.get(k) or {}).get("result") or {} for k in ("framing", "camera", "lighting", "grade"))
+    parts = [fr.get("shot_size"), fr.get("camera_angle"), fr.get("position"),
+             cam.get("move") and T("运镜{m}", "camera {m}", m=cam["move"]),
+             li.get("key_direction") and T("主光{k}", "key light {k}", k=li["key_direction"]),
+             li.get("quality"), gr.get("tone") and T("色调{t}", "{t} tone", t=gr["tone"])]
     return semi().join(p for p in parts if p)
 
 

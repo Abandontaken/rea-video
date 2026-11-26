@@ -69,6 +69,7 @@ HELP = {
     "capsule-draft.python": "capsule-cinema Python; same default as remake-run",
     "assemble": "through Capsule Cinema: put remade shots back on the original timeline and output a comparison video",
     "assemble.results": "results.json from remake-run (or your own file in the same format)",
+    "assemble.retime": "timing alignment: smooth frame-blended resampling with zero frozen frames (default) / warp discrete DTW peak matching",
     "assemble.capsule_root": _CAPSULE_ROOT,
     "assemble.overlays": "put measured captions / styled text / titles back on replaced shots in their original style (kept shots already have them); stickers are only listed, so source them yourself",
 
@@ -82,9 +83,10 @@ HELP = {
     "frames.points": "sample points per scene (default 4000)",
     "frames.all": "process all shots, not only code-rendered ones",
 
-    "compare": "compare the drawn layer of a remake and the original frame by frame (position, shape overlap, amount), list the worst moments and tile them",
+    "compare": "compare a remake against the original: drawn graphics layer by default, or per-shot camera/pose/layout/smoothness QA when --breakdown is given",
     "compare.ref": "original video",
     "compare.remake": "remade video",
+    "compare.breakdown": "breakdown.json: score generative remakes per shot on camera move, pose dynamics, layout and freeze frames",
     "compare.every": "sampling interval in seconds (default 0.5)",
     "compare.scenes": "frames/scenes.json: summarize scores per scene",
     "compare.worst": "worst moments to show in the comparison image (default 8)",
@@ -151,6 +153,12 @@ HELP = {
     "plan": "write the remake plan for the video model the user wants (part two of the report); the breakdown does not change",
     "plan.out_dir": "breakdown directory",
     "plan.model": "model id or name, saved to remake/intent.yaml (from rea-video models; for others, look it up and add it under ~/.rea-video/capabilities/models/)",
+    "plan.mode": "remake mode: match follows how each shot was originally made (default) / ai remakes the whole video with AI / shoot translates the video into a live camera shoot",
+    "plan.strategy": "AI video input modality: auto picks from model capabilities (default) / edit locks source motion with delta prompt / remix uses reference video / keyframes uses multi-shot source frames / frames uses first-last frame I2V / text uses text-to-video",
+    "plan.video_ref": "source video reference form: auto (default) / none (no source video) / source (raw cleaned source video) / depth (grayscale depth control video) / edge (structural soft-edge control video)",
+    "plan.image_ref": "upstream still-image reference form: auto (default) / none (pure T2I) / source (cleaned source frame I2I) / depth (depth map I2I) / edge (edge map I2I)",
+    "plan.max_images": "override per-call reference image limit for your gateway channel (pass 0 to reset)",
+    "plan.max_ref_video_s": "override per-call reference video seconds limit for your gateway channel (pass 0 to reset)",
     "plan.generate": "ai: generate only the shots that were AI in the original and write a shooting plan for live action; all: generate the whole video (full remake after swapping people or objects)",
     "plan.rewrite_prompts": "use the configured model (GEMINI_API_KEY or REA_VLM_*) to rewrite each unit's prompt in the chosen video model's style, validate and save to remake/prompts.json",
 

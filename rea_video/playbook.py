@@ -18,13 +18,13 @@ from .i18n import LangDict, T, model_name
 NAME_ZH = LangDict({
     "talking_head": "人物口播", "desk": "桌拍 / 开箱 / 带货", "vlog": "vlog 随拍", "live_drama": "实拍剧情",
     "ai_drama": "AI 剧情短片", "ai_product": "AI 商品广告", "ai_mv": "AI 音乐 MV", "avatar": "数字人口播",
-    "ai_clip": "AI 短片段（萌宠 / 奇观 / 单场景）", "animation": "3D / 动画",
+    "ai_clip": "AI 视觉短片 / 主题混剪", "animation": "3D / 动画",
     "film": "影视解说 / 混剪", "explainer": "动效科普 / 数据动画", "screen": "录屏教程 / 软件演示",
     "slideshow": "图片推拉成片（图文 / 故事 / 推文）", "beat": "卡点混剪", "dance": "舞蹈 / 动作表演",
 }, en={
     "talking_head": "talking head", "desk": "tabletop / unboxing / product", "vlog": "vlog", "live_drama": "live-action skit",
     "ai_drama": "AI story short", "ai_product": "AI product ad", "ai_mv": "AI music video", "avatar": "digital-avatar talking head",
-    "ai_clip": "short AI clip (pets / spectacle / single scene)", "animation": "3D / animation",
+    "ai_clip": "AI visual short / montage", "animation": "3D / animation",
     "film": "film commentary / film-clip montage", "explainer": "motion-graphics explainer", "screen": "screen tutorial / software demo",
     "slideshow": "stills with pan and zoom (photo story)", "beat": "beat-synced montage", "dance": "dance / action performance",
 })
@@ -194,7 +194,7 @@ def _material(b: dict, live: bool, refs: bool) -> str | None:
         if k not in kinds and not (live and k in ("实拍视频素材", "live footage")):
             kinds.append(k)
     cast = entities.cast(b)
-    who = [c.get("name") for c in cast.get("characters") or [] if c.get("name")]
+    recurring = [c.get("name") for c in cast.get("characters") or [] if c.get("name") and len(c.get("shots") or []) >= 2]
     swaps = (b.get("intent") or {}).get("swaps") or []
     out = []
     if swaps:  # the remake intent says what goes in; the source's own cast is not what needs a picture
@@ -205,12 +205,12 @@ def _material(b: dict, live: bool, refs: bool) -> str | None:
         if bare:
             out.append(T("只有文字描述（各给一张参考图会更稳，跨镜头不变样）：{h}", "described in words only (an image each keeps them the same across shots): {h}",
                          h=T("、", ", ").join(re.split(r"[，,;；]", x)[0].strip() for x in bare)))
-        who = []
+        recurring = []
     if kinds:
         out.append(T("画面里的真实素材（{k}）要拿到原文件，清单见「要准备的素材」", "the real material in the picture ({k}) needs the original files, listed under “What to prepare”",
                      k=T("、", ", ").join(kinds)))
-    if who and refs:
-        out.append(T("每个角色准备一张参考图，所有镜头都用同一张：{w}", "one reference image per character, the same one in every shot: {w}", w=T("、", ", ").join(who[:6])))
+    if recurring and refs:
+        out.append(T("跨多镜出场的角色各准备一张设定参考图锁住外观：{w}", "one reference image per recurring character to lock appearance across shots: {w}", w=T("、", ", ").join(recurring[:6])))
     if s.get("references") and refs:
         out.append(T("商品、Logo 等参考图见「复刻要准备的参考素材」", "product and logo references under “Reference material to prepare”"))
     return (T("**备素材**：", "**Collect material**: ") + T("；", "; ").join(out)) if out else None
@@ -277,7 +277,11 @@ def _generate(b: dict) -> list[str]:
     can_native = effective_native_audio(spec, plan.get("strategy") or "") if spec else True
     native = ((b.get("sound_sources") or {}).get("voice") or {}).get("source") == "ai_video_native" and can_native
     calls = plan.get("calls") or len(units)
-    if plan.get("strategy") == "remix":
+    if plan.get("strategy") == "edit":
+        L.append(T("**AI 生成（动作锁定编辑）**：{c} 次生成（共 {s:.0f} 秒）。把擦掉字幕的原片当基准视频喂给模型，配极简增量编辑提示词（仅写要改的外观/属性，锁死原片切镜、运镜与动作姿态）；基准视频在 `remake/refs/`",
+                   "**Generate (motion-locked edit)**: {c} call{p} ({s:.0f} s). Feeds the subtitle-erased source clip as base video with a delta-only edit prompt (locking cuts, camera and poses while editing look/attributes); clips are in `remake/refs/`",
+                   c=calls, p="" if calls == 1 else "s", s=secs))
+    elif plan.get("strategy") == "remix":
         L.append(T("**AI 生成**：{c} 次生成（共 {s:.0f} 秒）。每次把原片对应的一段当参考视频喂给模型，模型照它的分镜和节奏出完这段的镜头，"
                    "提示词只写每个镜头换成什么；参考视频已擦掉字幕切好，在 `remake/refs/`",
                    "**Generate**: {c} call{p} ({s:.0f} s). Each call gets its stretch of the source as the reference video and the model follows "
@@ -524,6 +528,11 @@ def steps(b: dict, kind: str, also: str | None = None) -> list[str]:
 
 def md(b: dict) -> list[str]:
     """The hands-on part of the remake section: the kind of video, then numbered steps built from this breakdown."""
+    if ((b.get("intent") or {}).get("mode") or "") == "shoot":
+        L = [T("当前按「真机实拍落地（--mode shoot）」规划：把原片画面翻译为现场机位与布光方案，按下面顺序执行。",
+               "Planned for a live camera shoot (--mode shoot): translating the source pictures into real-world camera setups and lighting."), ""]
+        L += [f"{i}. {x}" for i, x in enumerate(steps(b, "live_drama"), 1)]
+        return L + [""]
     ks = kinds(b)
     if not ks:
         return []

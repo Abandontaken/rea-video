@@ -16,7 +16,7 @@ from .narrative import ROLE_GUIDE
 from .vlm import SHOT_PROMPT, shot_hints
 
 PERF_TEMPLATE = {"who": "", "emotion": "", "intensity": "", "face": "", "body": "", "arc": [], "voice": "", "key": False, "move": "", "movers": 0, "full_body": None, "backdrop": "", "en": ""}
-SHOOT_LIKE = ("live_action", "avatar", "stop_motion", "film_footage")  # shots where "how was it shot / lit" applies
+SHOOT_LIKE = ("live_action", "stop_motion")  # shots where "how was it shot / lit" applies
 AGENT_WEIGHT = 0.85  # agent answers are softened toward uniform before fusion
 IMAGE_SOURCES = ("ai_image", "photo", "graphic", "screenshot", "unknown")
 EDIT_KINDS = ("face_swap", "lip_sync", "restyle", "outfit_swap", "bg_replace", "object_edit", "beautify")
@@ -53,9 +53,9 @@ kind 取 {"|".join(ASSET_KINDS)}，is_real_material 为 true/false）。
 画面里拍到了带字的东西（手机屏幕、包装、招牌）时填 overlay_text：这一镜后期加上去的字幕、花字、标注原文列表（画面本身的字不要写），报告会把其余 OCR 文字当成画面内容；没有这种情况就不填。
 同一段成片在片中出现不止一次（开头先放一段成片当预告、结尾完整放；或中途回放），在较短的那一处填 same_clip_as：另一处的镜头号（整数），复刻时只生成一次；不是就不要填。
 实拍或定格镜头被 AI 二次加工过时填 ai_edits：[{{"kind": "{"|".join(EDIT_KINDS)}", "evidence": "看到的破绽"}}]（换脸、对口型、风格化、换装、换背景、加删物体、美颜）；没有就留空。
-AI 生成 / 3D / 实拍镜头再填 replication：image_prompt（复刻首帧的<PROMPT_LANG>图像提示词：景别、机位高度和俯仰角、主体在画面里的位置和朝向、主体、光线、风格，有人物时写首帧的表情，具体可执行）、
-video_prompt（复刻该镜头的<PROMPT_LANG>视频提示词：先写景别、机位角度、主体在画面里的位置，再写动作过程和结束状态、运镜；人物表演写看得见的表情和动作，不写情绪词，幅度宁小勿大；只写想要的内容，不写否定句）、video_prompt_en（英文版）、
-motion_prompt（首帧/首尾帧模式下的纯动态提示词：只写动作过程、结束状态和运镜，不重复描述首帧图里已有的外貌、场景和光线）、motion_prompt_en（英文纯动态版）。
+AI 生成 / 3D / 实拍镜头再填 replication：image_prompt（复刻首帧的<PROMPT_LANG>图像提示词：景别、机位高度和俯仰角、主体在画面里的位置和朝向、主体，以及四维质感——①渲染介质［严格区分无描边 3D CG 光追硬表面/次表面渲染、真机实拍光学、2.5D 厚涂插画、2D 线稿平涂，严禁把无描边 3D CG 泛化写成二次元/插画］②材质微观肌理［皮肤纹理、织物经纬、金属磨损、流体植被细节］③光影反差［高反差暗调逆光、柔光漫射、轮廓高光］④镜头光学特征［前景遮挡失焦、大光圈散景光斑 Bokeh、边缘辉光 Bloom］；有人物时写首帧自然表情）、
+video_prompt（复刻该镜头的<PROMPT_LANG>视频提示词：先对照每镜实测 `motion` 字段里的 `camera_traj`、`net_zoom_pct` 与 `motion_regime`，再看 sheet 关键帧首尾变化，写清景别、机位角度、主体位置、动作过程、环境次级物理动态、结束状态与运镜方向幅度；严禁写反推/拉方向；当 `motion_regime=anchored_pose` 时说明主体核心姿态与朝向保持锚定，动态来自 3D 视差运镜及风吹发丝衣摆/粒子流体/光影微动，足量写出真实次级物理张力但严禁凭空脑补转身、迈步或抬手等未发生的大幅肢体动作；当 `motion_regime=articulated_action` 时如实写清起止帧间的姿态变化轨迹与结束落幅；面部表情保持克制自然，只写想要的内容，不写否定句）、video_prompt_en（英文版）、
+motion_prompt（首帧/首尾帧模式下的纯动态提示词：只写实测与可见的运动过程、次级物理动态、结束状态和运镜方向幅度，不重复描述首帧图里已有的外貌、场景和光线）、motion_prompt_en（英文纯动态版）。
 这些提示词会被合并进「生成单元」的多镜头提示词，所以每镜只写这一镜的内容，统一的风格和场景描述写在 description 里即可。
 
 实拍/写实镜头再填 aspects（怎么拍、怎么打光；纯图形/界面画面不填），像素测不出的部分靠你看：
@@ -79,7 +79,7 @@ hook 开头几秒怎么抓住人（写清第几秒、画面和字幕做了什么
 例如"0–6 秒先放 AI 成片预告：观众先看到结果，才有动力看完教程"，不要写空话（"节奏紧凑""画面精美"）。
 答案顶层的 cast 写整片的角色、场景和道具（看 storyboard.jpg 和各镜截图）：characters 每个主要角色一条（id 编号、name 称呼、kind person|animal|cartoon|avatar|product|other、
 look 外观写到能据此再画出同一个角色、role 作用、voice 音色、shots 出场镜头号）；同一个角色在不同镜头要认成同一个。scenes 每个地点一条（id、where、when、look、shots）；
-props 道具 / 商品 / Logo（name、note、shots）；style 一句整体视觉风格与调色。
+props 道具 / 商品 / Logo（name、note、shots）；style 整体视觉风格与调色（必须写清四要素：渲染介质［如无描边 3D CG 光追硬表面 vs 2.5D 插画 vs 2D 平涂 vs 实拍］、核心材质肌理、光影反差比、景深散景 Bokeh/辉光 Bloom 等光学特征）。
 
 剪辑包装（tasks.packaging，有才做）：
 - stickers：工具找到的贴纸 / 动图 / 画中画，看 image（贴纸截图）和 frame_cmd 抽的帧，在答案 packaging.stickers 里填
@@ -152,7 +152,10 @@ def build_tasks(breakdown: dict, out_dir: str) -> tuple[dict, dict]:
 
         if maybe_motion(rec, breakdown) and not move_of(rec):
             why = why + [T("长镜头、动作量大、有配乐少台词：如果大幅度的全身动作本身是看点（舞蹈、打斗、健身），填 performance.move / movers / full_body / backdrop", "long shot with big motion, music and few lines: if large full-body movement is the point (dance, fight, fitness), fill in performance.move / movers / full_body / backdrop")]
-        shoot_like = any(l in SHOOT_LIKE for l, _ in ranked[:2])
+        shoot_like = dl in SHOOT_LIKE or (bool(alt) and alt[0][0] in SHOOT_LIKE and alt[0][1] >= 0.35 and bool(ctx.get("native30")))
+        feats = rec.get("features") or {}
+        motion_facts = {k: feats[k] for k in ("camera_traj", "net_zoom_pct", "parallax_score", "motion_regime", "pose_change")
+                        if feats.get(k) is not None}
         shots.append({
             "id": rec["id"], "index": rec["index"], "start": rec["start"], "end": rec["end"], "duration": rec["duration"],
             "priority": prio, "why": why,
@@ -160,7 +163,8 @@ def build_tasks(breakdown: dict, out_dir: str) -> tuple[dict, dict]:
                      "second": [alt[0][0], round(alt[0][1], 3)] if alt else None,
                      "evidence": rec["deterministic"]["evidence"][:6]},
             # the tool's top label is already in "tool"; drop it from the raw hints
-            "hints": shot_hints(rec["features"], rec["deterministic"]["facts"], dl, dp).split("; 确定性初判=")[0],
+            "hints": shot_hints(feats, rec["deterministic"]["facts"], dl, dp).split("; 确定性初判=")[0],
+            **({"motion": motion_facts} if motion_facts else {}),
             **({"aspects": {k: v["result"] for k, v in (rec.get("aspects") or {}).items() if v.get("result")}} if shoot_like else {}),
             # the sheet already holds the key frames; separate first / last frames would triple the image tokens
             **({"keyframes": [[k["t"], k.get("role", "")] for k in rec["keyframes"]]} if rec.get("keyframes") else {}),

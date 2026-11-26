@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ..i18n import LangDict, T, semi
 
-from .base import FILMED, Aspect, Field, field_table, register, video_seen
+from .base import Aspect, Field, field_table, filmed_shots, register, video_seen
 
 FORMAT_ZH = LangDict({"talking_head": "人物口播", "desk": "桌面/物品拍摄（桌拍）", "product": "手持拍物品（开箱/带货/第一视角）",
                       "vlog": "vlog 随拍", "other": "其他实拍"},
@@ -27,7 +27,7 @@ class Format(Aspect):
         ])
 
     def summarize(self, shots: list[dict], b: dict) -> dict:
-        filmed = [r for r in shots if r["base"]["label"] in FILMED]
+        filmed = filmed_shots(shots, b)
         f_dur = sum(r["duration"] for r in filmed)
         if not filmed or f_dur < 0.2 * (sum(r["duration"] for r in shots) or 1):
             return {}

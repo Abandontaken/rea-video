@@ -1786,10 +1786,19 @@ def clean_region(stickers: list[dict], t0: float, t1: float, min_area: float = 0
 
 def shot_layers(pack: dict, rec: dict, label: str) -> list[dict]:
     """花字 / sticker layers on one shot. Marks stickers on content bases that are probably part of the picture."""
+    from .classify import _same_words
+
     t0, t1 = rec["start"], rec["end"]
+    said = shot_overlay_text(rec)
     out = []
     for c in pack.get("text_cues", []):
         if c["kind"] == "huazi" and min(t1, c["t1"]) - max(t0, c["t0"]) > 0.1:
+            if c.get("part_of_picture") or (isinstance(said, list) and not any(_same_words(c["text"], o) for o in said)):
+                c["part_of_picture"] = True
+                st = rec.setdefault("base", {}).setdefault("scene_text", [])
+                if c["text"] and c["text"] not in st:
+                    st.append(c["text"])
+                continue
             out.append({"kind": "huazi", "source": "code_or_editor", "band": c.get("band"), "texts": [c["text"]], "ref": c["id"]})
     for s in pack.get("stickers", []):
         ov = min(t1, s["t1"]) - max(t0, s["t0"])

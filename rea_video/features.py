@@ -400,7 +400,9 @@ def shot_features(samples: ShotSamples, fps: float) -> dict:
     else:
         agg["start_end_mad"] = 0.0
     agg.update(resampling_signature(samples.sharpness))
-    agg.update(motion_summary(samples.motion, fps))
+    ms = motion_summary(samples.motion, fps)
+    agg.update(ms)
+    agg.update(kinematics_summary(samples.frames, samples.frame_times, ms))
     return agg
 
 
@@ -471,4 +473,188 @@ def motion_summary(motion: list[dict], fps: float) -> dict:
         "kenburns_score": kb,
         "comp_block_p98": comp_p98,
         "camera": camera,
+    }
+
+
+def kinematics_summary(frames: list[np.ndarray], frame_times: list[float], ms: dict) -> dict:
+    """3D-parallax-resilient camera trajectory and global-motion-compensated subject pose change.
+
+    Single-plane RANSAC (`global_motion`) underestimates dolly push/pull when foreground, subject and background sit at
+    different depths, and `local_motion_ratio` conflates articulated limb/torso actions with hair/cloth wind or bokeh
+    drift. Dense multi-quadrant radial divergence + aligned start-vs-end contour correlation separate them cleanly.
+    """
+    default = {"radial_zoom_per_s": 0.0, "net_zoom_pct": 0.0, "parallax_score": 0.0,
+               "camera_traj": "static", "pose_change": 0.0, "motion_regime": "near_static"}
+    if len(frames) < 2:
+        return default
+    kw = 160
+    h0, w0 = frames[0].shape[:2]
+    if h0 < 16 or w0 < 16:
+        return default
+    kh = max(24, int(round(h0 * kw / float(w0))))
+    grays = [cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (kw, kh), interpolation=cv2.INTER_AREA).astype(np.float32)
+             for f in frames]
+    if len(frame_times) == len(frames) and frame_times[-1] > frame_times[0] + 0.02:
+        ts = [float(t) for t in frame_times]
+    else:
+        ts = np.linspace(0.0, max(0.2, (len(frames) - 1) / 8.0), len(frames)).tolist()
+    dur = max(0.08, ts[-1] - ts[0])
+    idxs = np.unique(np.linspace(0, len(grays) - 1, num=min(len(grays), 6)).round().astype(int))
+    if len(idxs) < 2:
+        return default
+
+    xs = (np.arange(kw, dtype=np.float32) - (kw - 1) / 2.0) / max(1.0, kw / 2.0)
+    ys = (np.arange(kh, dtype=np.float32) - (kh - 1) / 2.0) / max(1.0, kh / 2.0)
+    xx, yy = np.meshgrid(xs, ys)
+    r2 = xx * xx + yy * yy
+    outer = r2 >= 0.09
+    quads = [outer & (xx < 0) & (yy < 0), outer & (xx >= 0) & (yy < 0),
+             outer & (xx < 0) & (yy >= 0), outer & (xx >= 0) & (yy >= 0)]
+
+    rad_rates: list[float] = []
+    u_rates: list[float] = []
+    v_rates: list[float] = []
+    plx_vals: list[float] = []
+    for i0, i1 in zip(idxs[:-1], idxs[1:]):
+        dt = max(0.03, ts[i1] - ts[i0])
+        g0, g1 = grays[i0], grays[i1]
+        flow = cv2.calcOpticalFlowFarneback(g0, g1, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        gx = cv2.Sobel(g0, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(g0, cv2.CV_32F, 0, 1, ksize=3)
+        tex = np.hypot(gx, gy) > 8.0
+        u = flow[..., 0] / max(1.0, kw / 2.0)
+        v = flow[..., 1] / max(1.0, kh / 2.0)
+        q_u, q_v = [], []
+        for q in quads:
+            qm = (tex & q) if (tex & q).sum() >= 10 else q
+            if qm.any():
+                q_u.append(float(np.median(u[qm])))
+                q_v.append(float(np.median(v[qm])))
+        u0 = float(np.mean(q_u)) if q_u else 0.0
+        v0 = float(np.mean(q_v)) if q_v else 0.0
+        u_rates.append(u0 / dt)
+        v_rates.append(v0 / dt)
+
+        s_map = ((u - u0) * xx + (v - v0) * yy) / np.maximum(r2, 0.09)
+        q_s = []
+        for q in quads:
+            qm = (tex & q) if (tex & q).sum() >= 10 else q
+            if qm.sum() >= 10:
+                q_s.append(float(np.median(s_map[qm])))
+        pos_q = sum(x > 0.0035 for x in q_s)
+        neg_q = sum(x < -0.0035 for x in q_s)
+        s_step = 0.0
+        if q_s and ((pos_q >= 3 and neg_q == 0) or (neg_q >= 3 and pos_q == 0)
+                    or (pos_q >= 2 and neg_q == 0 and np.median(q_s) > 0.005)
+                    or (neg_q >= 2 and pos_q == 0 and np.median(q_s) < -0.005)
+                    or (max(pos_q, neg_q) >= 3 and abs(np.median(q_s)) > 0.012)):
+            s_step = float(np.median(q_s))
+        rad_rates.append(s_step / dt)
+
+        # Depth-layer speed dispersion along the global camera vector (0 for 2D planar Ken Burns, high for 3D parallax)
+        mask = (tex & outer) if (tex & outer).sum() >= 40 else outer
+        up, vp = u0 + s_step * xx, v0 + s_step * yy
+        pmag = np.hypot(up, vp)
+        active = mask & (pmag > 0.008)
+        if active.sum() >= 30:
+            proj = (u[active] * up[active] + v[active] * vp[active]) / (pmag[active] ** 2 + 1e-6)
+            same_dir = float((proj > 0.15).mean())
+            if same_dir >= 0.72:
+                iqr = float(np.percentile(proj, 80) - np.percentile(proj, 20))
+                plx_vals.append(float(np.clip((iqr - 0.18) / 0.75, 0.0, 1.0)))
+            else:
+                plx_vals.append(0.0)
+
+    z_rad = float(np.median(rad_rates)) if rad_rates else 0.0
+    z_ransac = float(ms.get("zoom_per_s") or 0.0)
+    kb = float(ms.get("kenburns_score") or 0.0)
+    inl = float(ms.get("rigid_inlier_ratio") or 0.0)
+    if kb > 0.5:
+        z_eff = z_ransac
+    elif abs(z_rad) > 0.012 and (abs(z_rad) >= abs(z_ransac) or z_ransac * z_rad > 0):
+        z_eff = z_rad if abs(z_ransac) < 0.008 else 0.6 * z_rad + 0.4 * z_ransac
+    elif inl > 0.65 and abs(z_ransac) > 0.01:
+        z_eff = z_ransac
+    else:
+        z_eff = z_rad if abs(z_rad) > abs(z_ransac) else z_ransac
+
+    u_rate = float(np.median(u_rates)) if u_rates else 0.0
+    v_rate = float(np.median(v_rates)) if v_rates else 0.0
+    net_zoom_pct = round(z_eff * dur * 100.0, 2)
+    net_u_pct = u_rate * dur * 50.0  # u is in half-widths, so * 50 = % of full frame width
+    net_v_pct = v_rate * dur * 50.0
+    cam_kind = ms.get("camera") or "unknown"
+    if cam_kind == "handheld_like" and abs(net_zoom_pct) < 3.0 and max(abs(net_u_pct), abs(net_v_pct)) < 4.0:
+        traj = "handheld"
+    elif abs(net_zoom_pct) >= 2.2 and abs(net_zoom_pct) >= 0.75 * max(abs(net_u_pct), abs(net_v_pct)):
+        traj = "push_in" if net_zoom_pct > 0 else "pull_out"
+    elif max(abs(net_u_pct), abs(net_v_pct)) >= 2.5:
+        if abs(net_u_pct) >= abs(net_v_pct):
+            traj = "pan_right" if net_u_pct < 0 else "pan_left"  # pixels moving left = camera panning/trucking right
+        else:
+            traj = "tilt_down" if net_v_pct < 0 else "tilt_up"
+    elif abs(z_eff) > 0.012:
+        traj = "push_in" if z_eff > 0 else "pull_out"
+    else:
+        traj = "static"
+
+    # Subject-depth-adaptive central contour comparison: under 3D parallax, the central subject scales at its own depth
+    # Z_subject (often faster than distant background). A held pose matches across start->end under some 2D scale + small
+    # shift (`TM_CCORR_NORMED` high); an articulated turn, limb gesture or walk changes geometry so no 2D scale+shift fits.
+    def _grad_env(g: np.ndarray) -> np.ndarray:
+        b = cv2.GaussianBlur(g, (0, 0), 2.6)
+        return np.hypot(cv2.Sobel(b, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(b, cv2.CV_32F, 0, 1, ksize=3))
+
+    e0, e1 = _grad_env(grays[0]), _grad_env(grays[-1])
+    cy0, cy1 = int(0.14 * kh), max(int(0.14 * kh) + 12, int(0.88 * kh))
+    cx0, cx1 = int(0.18 * kw), max(int(0.18 * kw) + 12, int(0.82 * kw))
+    pad_y, pad_x = max(4, int(0.12 * kh)), max(4, int(0.12 * kw))
+    best_sim = 0.0
+    if float(np.linalg.norm(e0[cy0:cy1, cx0:cx1])) > 12.0 and float(np.linalg.norm(e1[cy0:cy1, cx0:cx1])) > 12.0:
+        for s_cand in (0.80, 0.88, 0.94, 1.0, 1.06, 1.14, 1.24):
+            if s_cand <= 1.0:
+                src_patch = e0[cy0:cy1, cx0:cx1]
+                th = max(8, int(round(src_patch.shape[0] * s_cand)))
+                tw = max(8, int(round(src_patch.shape[1] * s_cand)))
+                tpl = cv2.resize(src_patch, (tw, th), interpolation=cv2.INTER_AREA)
+                wy0, wy1 = max(0, (kh - th) // 2 - pad_y), min(kh, (kh + th) // 2 + pad_y)
+                wx0, wx1 = max(0, (kw - tw) // 2 - pad_x), min(kw, (kw + tw) // 2 + pad_x)
+                win = e1[wy0:wy1, wx0:wx1]
+            else:
+                # Subject grew larger from frame 0 -> end: match shrunk end-frame central patch inside frame 0
+                inv = 1.0 / s_cand
+                dst_patch = e1[cy0:cy1, cx0:cx1]
+                th = max(8, int(round(dst_patch.shape[0] * inv)))
+                tw = max(8, int(round(dst_patch.shape[1] * inv)))
+                tpl = cv2.resize(dst_patch, (tw, th), interpolation=cv2.INTER_AREA)
+                wy0, wy1 = max(0, (kh - th) // 2 - pad_y), min(kh, (kh + th) // 2 + pad_y)
+                wx0, wx1 = max(0, (kw - tw) // 2 - pad_x), min(kw, (kw + tw) // 2 + pad_x)
+                win = e0[wy0:wy1, wx0:wx1]
+            if win.shape[0] >= tpl.shape[0] and win.shape[1] >= tpl.shape[1]:
+                res_cc = cv2.matchTemplate(win, tpl, cv2.TM_CCORR_NORMED)
+                best_sim = max(best_sim, float(res_cc.max()))
+        pose_change = float(np.clip(1.0 - best_sim, 0.0, 1.0))
+    else:
+        pose_change = float(np.clip(np.abs(grays[0][cy0:cy1, cx0:cx1] - grays[-1][cy0:cy1, cx0:cx1]).mean() / 40.0, 0.0, 1.0))
+
+    flow_p90 = float(ms.get("flow_p90") or 0.0)
+    local_r = float(ms.get("local_motion_ratio") or 0.0)
+    mad_se = float(np.abs(grays[0] - grays[-1]).mean())
+    if flow_p90 < 0.22 and mad_se < 2.2 and traj == "static":
+        regime = "near_static"
+    elif kb > 0.5 or (pose_change < 0.13 and local_r < 0.04 and traj != "static"):
+        regime = "camera_only"
+    elif pose_change < 0.27:
+        regime = "anchored_pose"
+    else:
+        regime = "articulated_action"
+
+    parallax = round(float(np.median(plx_vals)), 3) if plx_vals and kb < 0.5 else 0.0
+    return {
+        "radial_zoom_per_s": round(z_rad, 4),
+        "net_zoom_pct": net_zoom_pct,
+        "parallax_score": parallax,
+        "camera_traj": traj,
+        "pose_change": round(pose_change, 3),
+        "motion_regime": regime,
     }

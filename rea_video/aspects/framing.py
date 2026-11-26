@@ -9,7 +9,7 @@ import numpy as np
 
 from ..i18n import LangDict, T, join, semi
 
-from .base import FILMED, PHOTOGRAPHIC, Aspect, Field, ShotCtx, field_table, register, seen, weighted_mode
+from .base import Aspect, Field, ShotCtx, field_table, filmed_shots, register, seen, weighted_mode
 
 SIZES = LangDict({"ecu": "大特写", "cu": "特写", "mcu": "近景", "ms": "中景", "fs": "全景", "ls": "远景"},
                  en={"ecu": "extreme close-up", "cu": "close-up", "mcu": "medium close-up", "ms": "medium shot", "fs": "full shot",
@@ -72,7 +72,7 @@ class Framing(Aspect):
                 "subject": m.get("subject")}
 
     def summarize(self, shots: list[dict], b: dict) -> dict:
-        main = [r for r in shots if r["base"]["label"] in FILMED] or [r for r in shots if r["base"]["label"] in PHOTOGRAPHIC]
+        main = filmed_shots(shots, b)
         if not main:
             return {}
         tot = sum(r["duration"] for r in main)

@@ -108,6 +108,12 @@ def motion_curve(frames) -> np.ndarray:
         out.append(0.0 if prev is None else float(cv2.resize(np.abs(g - prev), (12, 8), interpolation=cv2.INTER_AREA).max()) / 255.0)
         prev = g
     c = np.array(out)
+    # Guard against boundary cut/fade-to-black spikes (e.g. a 1-frame black drop at shot end) dwarfing interior motion
+    if len(c) >= 8:
+        mid_cap = float(np.percentile(c[2:-2], 95)) * 1.5
+        if mid_cap > 0.01:
+            c[:2] = np.minimum(c[:2], mid_cap)
+            c[-2:] = np.minimum(c[-2:], mid_cap)
     if len(c) >= 3:
         c = np.array([c[max(0, i - 2):i + 1].max() for i in range(len(c))])
         c = np.convolve(c, np.ones(3) / 3, mode="same")
@@ -195,29 +201,53 @@ def _warp_clip(src: Path, out: Path, path: list[int], size: tuple[int, int], fps
     return out
 
 
-def fit_to_original(src: Path, out: Path, original: Path, first: int, frames: int, size: tuple[int, int], fps: float) -> str:
-    """A generated clip into the original shot's frames: warped so its moves land where the original's do, else
-    sped up or slowed down evenly. Returns how ("warped" / "even")."""
-    try:
-        ref = motion_curve(_frames_at(original, fps, WARP_W, first, frames, gray=True))
-        gen = motion_curve(_frames_at(src, fps, WARP_W, gray=True))
-        path = warp_map(ref[:frames], gen) if len(ref) >= frames - 1 else None
-        if path:
-            _warp_clip(src, out, path + [path[-1]] * (frames - len(path)), size, fps)
-            return "warped"
-    except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as exc:
-        LOG.warning("timing the clip to the original failed (%s); fitting it evenly", str(exc)[:120])
-    _fit_clip(src, out, frames, size, fps)
-    return "even"
+def fit_to_original(src: Path, out: Path, original: Path, first: int, frames: int, size: tuple[int, int], fps: float,
+                    retime: str = "smooth", bookend: bool = True) -> str:
+    """A generated clip into the original shot's frames: `smooth` (default) resamples continuously without step=0
+    frozen frames; `warp` aligns discrete gesture peaks via dynamic time warping. When `bookend=False` (open-ended
+    first-frame or text generation padded by a model's minimum call duration), clips >1.35x longer than the shot are
+    trimmed at natural 1.0x speed instead of hyper-lapse fast-forwarding."""
+    if retime == "warp":
+        try:
+            ref = motion_curve(_frames_at(original, fps, WARP_W, first, frames, gray=True))
+            gen = motion_curve(_frames_at(src, fps, WARP_W, gray=True))
+            path = warp_map(ref[:frames], gen) if len(ref) >= frames - 1 else None
+            if path:
+                _warp_clip(src, out, path + [path[-1]] * (frames - len(path)), size, fps)
+                return "warped"
+        except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as exc:
+            LOG.warning("timing the clip to the original failed (%s); fitting it evenly", str(exc)[:120])
+    return _fit_clip_mode(src, out, frames, size, fps, blend=(retime == "smooth"), bookend=bookend)
 
 
-def _fit_clip(src: Path, out: Path, frames: int, size: tuple[int, int], fps: float) -> Path:
-    w, h = size
-    speed = fit_speed(_clip_seconds(src), frames / fps)
-    tail, flags = _exact(fps, frames)
-    vf = f"setpts=PTS/{speed:.4f},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},{tail}"
-    _ff(["-i", str(src), "-an", "-vf", vf, *flags, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)])
+def _fit_clip(src: Path, out: Path, frames: int, size: tuple[int, int], fps: float, blend: bool = False) -> Path:
+    _fit_clip_mode(src, out, frames, size, fps, blend=blend, bookend=True)
     return out
+
+
+def _fit_clip_mode(src: Path, out: Path, frames: int, size: tuple[int, int], fps: float,
+                   blend: bool = False, bookend: bool = True) -> str:
+    w, h = size
+    clip_s = _clip_seconds(src)
+    target_s = frames / fps
+    if not bookend and target_s > 0 and clip_s > target_s * 1.35:
+        speed, mode = 1.0, "trimmed"
+    elif blend and clip_s > 0 and target_s > clip_s:
+        # Smooth frame-blended resampling handles up to 1.65x slow-stretch cleanly, avoiding frozen tail clone frames
+        speed, mode = max(1.0 / 1.65, clip_s / target_s), "even"
+    else:
+        speed, mode = fit_speed(clip_s, target_s), "even"
+    tail, flags = _exact(fps, frames)
+    scale_crop = f"setpts=PTS/{speed:.4f},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+    if blend:
+        smooth_tail = f"framerate=fps={fps}:interp_start=0:interp_end=255:scene=100,tpad=stop_mode=clone:stop_duration={frames / fps + 1:.3f}"
+        try:
+            _ff(["-i", str(src), "-an", "-vf", f"{scale_crop},{smooth_tail}", *flags, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)])
+            return mode
+        except subprocess.CalledProcessError:
+            pass
+    _ff(["-i", str(src), "-an", "-vf", f"{scale_crop},{tail}", *flags, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)])
+    return mode
 
 
 def _original_segment(src: Path, out: Path, first: int, frames: int, size: tuple[int, int], fps: float) -> Path:
@@ -271,7 +301,7 @@ def overlay_cues(b: dict, spans: list[tuple[float, float]]) -> tuple[list[dict],
 
 
 def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: float,
-               bounds: dict[int, tuple[int, int]] | None = None) -> dict:
+               bounds: dict[int, tuple[int, int]] | None = None, bdir: Path | None = None) -> dict:
     """Generation-unit clips (one call made several shots: results keyed "G2", or "G4-1", "G4-2" for the parts of a
     long shot) -> one clip per shot. The parts are fitted to their lengths and joined; the shots are then cut at the
     source's own cut points, because the model was given the source stretch and follows its timing.
@@ -290,10 +320,33 @@ def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: f
         got.sort(key=lambda v: v.get("part", 1))
         if len(got) < int(got[0].get("parts") or 1) or not all(v.get("video") and Path(v["video"]).is_file() for v in got):
             continue
+        shots_list = [i for i in (got[0].get("shots") or []) if i in by_index and i in bounds]
+        # Single-call multi-shot unit: slice at actual pixel hard cuts first so cuts never drift into neighbouring shots
+        if len(got) == 1 and len(shots_list) > 1:
+            from .integrations.run_remake import _split_multishot_unit
+
+            r_shots = [by_index[i] for i in shots_list]
+            split_map = _split_multishot_unit(Path(got[0]["video"]), shots_list, float(got[0].get("trim_to") or 0),
+                                              udir / f"{uid}_cuts", ref_shots=r_shots, bdir=bdir)
+            if len(split_map) == len(shots_list):
+                for s_key, s_vid in split_map.items():
+                    out[s_key] = {"video": s_vid, "unit": uid}
+                continue
         fitted = []
         for v in got:
             f = udir / f"{uid}_p{v.get('part', 1)}.mp4"
-            _fit_clip(Path(v["video"]), f, max(1, int(round(float(v["trim_to"]) * fps))), size, fps)
+            trim_s = float(v["trim_to"])
+            target_frames = max(1, int(round(trim_s * fps)))
+            src_p = Path(v["video"])
+            if len(shots_list) > 1 and _clip_seconds(src_p) >= trim_s - 0.05:
+                # Trim tail padding instead of speeding up the entire multi-shot clip
+                tail, flags = _exact(fps, target_frames)
+                w, h = size
+                _ff(["-i", str(src_p), "-t", f"{trim_s:.4f}", "-an",
+                     "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},{tail}",
+                     *flags, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(f)])
+            else:
+                _fit_clip(src_p, f, target_frames, size, fps)
             fitted.append(f)
         whole = fitted[0]
         if len(fitted) > 1:
@@ -314,18 +367,21 @@ def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: f
 
 
 def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = None, overlays: bool = False,
-             code_video: Path | None = None, extra: dict | None = None) -> str:
+             code_video: Path | None = None, extra: dict | None = None, retime: str = "smooth") -> str:
     """code_video: a remake of the code-rendered shots on the original timeline (`code-remake`), cut in for them.
     extra: more {shot: {"video": path}} results on top of results_path's (later ones win)."""
     b = read_json(breakdown_path)
     bdir = breakdown_path.parent
     jobs_path = results_path.with_name("jobs.json")
-    jobs = {j["shot"]: j for j in read_json(jobs_path)["jobs"]} if jobs_path.is_file() else {}
+    raw_jobs = read_json(jobs_path)["jobs"] if jobs_path.is_file() else []
+    jobs = {s: j for j in raw_jobs for s in (j.get("shots") or [j["shot"]])}
     results = read_json(results_path).get("results", {}) if results_path.is_file() else {}
     out_dir = out_dir or results_path.parent
     seg_dir = out_dir / "segments"
     seg_dir.mkdir(parents=True, exist_ok=True)
     src = Path(b["source"]["path"])
+    if not src.is_file() and not src.is_absolute() and (bdir / src).is_file():
+        src = bdir / src
     w, h = b["source"]["width"], b["source"]["height"]
     if b["source"].get("rotation") in (90, 270):
         w, h = h, w
@@ -334,8 +390,8 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
     results = {**results, **{str(k): v for k, v in (extra or {}).items()}}
     # unit clips (one call, several shots) become per-shot clips; a shot's own clip, given later, still wins
     bounds = frame_bounds(b["shots"], fps)
-    results = {**unit_shots(b, results, seg_dir / "units", (w, h), fps, bounds),
-               **{k: v for k, v in results.items() if not (isinstance(v, dict) and v.get("unit"))}}
+    results = {**unit_shots(b, results, seg_dir / "units", (w, h), fps, bounds, bdir=bdir),
+               **{k: v for k, v in results.items() if not (isinstance(v, dict) and (v.get("unit") or v.get("from_unit")))}}
     parts, legend = [], []
     timing: dict[str, str] = {}  # generated shots: warped onto the original's moves, or fitted evenly
     for sh in b["shots"]:
@@ -345,7 +401,8 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
         res = results.get(str(sh["index"])) or {}
         job = jobs.get(sh["index"], {})
         if res.get("video") and Path(res["video"]).is_file():
-            how = fit_to_original(Path(res["video"]), seg, src, first, n, (w, h), fps)
+            is_bookend = bool(res.get("bookend") if "bookend" in res else job.get("bookend", not bool(job or res.get("unit") or res.get("from_unit"))))
+            how = fit_to_original(Path(res["video"]), seg, src, first, n, (w, h), fps, retime=retime, bookend=is_bookend)
             legend.append((sh["index"], "generated"))
             timing[str(sh["index"])] = how
         elif code_video and sh["base"]["label"] == "code_render" and Path(code_video).is_file():
@@ -400,8 +457,18 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
         except subprocess.CalledProcessError:
             if not with_text:
                 raise
+    qa_summary: dict | None = None
+    if any(how == "generated" for _, how in legend):
+        try:
+            from .remake_qa import evaluate_remake
+
+            qa_res = evaluate_remake({**b, "source": {**b["source"], "path": str(src)}}, final, out_dir=out_dir, legend=legend, replaced_only=True)
+            if qa_res.get("evaluated_shots"):
+                qa_summary = {k: qa_res.get(k) for k in ("evaluated_shots", "score", "camera_score", "motion_score", "layout_score", "smoothness", "issues")}
+        except Exception as exc:  # noqa: BLE001  QA diagnostics must never abort assembly
+            LOG.warning("remake QA evaluation failed: %s", str(exc)[:120])
     log = {"legend": legend, "remake": str(final), "compare": str(compare), **({"timing": timing} if timing else {}),
-           **({"overlays": overlay_log} if overlays else {})}
+           **({"overlays": overlay_log} if overlays else {}), **({"qa": qa_summary} if qa_summary else {})}
     (out_dir / "assemble_log.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
     LOG.info("remake -> %s ; compare -> %s", final, compare)
     return json.dumps(log, ensure_ascii=False)
@@ -560,8 +627,15 @@ def remake(out: Path, code: bool = False, overlays: bool = True) -> dict:
          T("| 镜头 | 时间 | 画面类型 | 现在 |", "| Shot | Time | Picture | Now |"), "|---|---|---|---|"]
     for r in rows:
         L.append(f"| #{r['shot']} | {r['start']:.1f}–{r['end']:.1f}s | {LABEL_ZH.get(r['label'], r['label'])} | {HOW[r['now']]} |")
+    qa_file = rdir / "qa.json"
+    if log.get("qa") and qa_file.is_file():
+        from .remake_qa import qa_markdown
+
+        L += qa_markdown(read_json(qa_file))
     (rdir / "status.md").write_text("\n".join(L) + "\n", encoding="utf-8")
-    write_json(rdir / "status.json", {"replaced_share": round(done / total, 3), "shots": rows})
+    write_json(rdir / "status.json", {"replaced_share": round(done / total, 3), "shots": rows,
+                                      **({"qa": log["qa"]} if log.get("qa") else {})})
     res.update({"remake": log["remake"], "compare": log["compare"], "status": str(rdir / "status.md"),
-                "replaced_share": round(done / total, 3), "to_do": todo})
+                "replaced_share": round(done / total, 3), "to_do": todo,
+                **({"qa": log["qa"]} if log.get("qa") else {})})
     return res

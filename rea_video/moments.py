@@ -1159,12 +1159,13 @@ def videomd(b: dict) -> list[str]:
                          + (" | to_confirm: " + "; ".join(ex["doubts"]) if ex.get("doubts") else ""))
         return L
     if mo.get("status") == "done":
-        return ["## " + T("特殊时刻", "Special moments"), "", T("- 看过了，没有找到特殊时刻", "- Looked: no special moments found")]
+        return ["## " + T("特殊时刻", "Special moments"), "", T("- 看过了，没有找到特殊时刻", "- Looked: no special moments found")] if mo.get("genre") == "magic" else []
+    if mo.get("genre") != "magic":
+        return []
     L = ["## " + T("特殊时刻", "Special moments"), "",
          T("- 还没有看图找：运行 `rea-video moments <本目录>`，按输出看图作答（开了 VLM 时 decompose 会自动做）",
-           "- Not looked for yet: run `rea-video moments <this dir>` and answer from the images (decompose does it itself with a VLM)")]
-    if mo.get("genre") == "magic":
-        L.append(T("- 这是魔术视频：建议找出每段魔术的变化瞬间", "- This is a magic video: find each trick's reveal"))
+           "- Not looked for yet: run `rea-video moments <this dir>` and answer from the images (decompose does it itself with a VLM)"),
+         T("- 这是魔术视频：建议找出每段魔术的变化瞬间", "- This is a magic video: find each trick's reveal")]
     hs = mo.get("hints") or []
     if hs:
         L.append(T("- 工具候选（只供参考，约一成是真的）：", "- Tool hints (for reference, about one in ten is real): ")

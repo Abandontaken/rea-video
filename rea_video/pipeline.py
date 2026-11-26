@@ -63,8 +63,10 @@ def vlm_units(records: list[dict], max_calls: int) -> list[list[dict]]:
 
 
 # modules that only run in finalize(): a change there needs no new decode. Everything else measures the video.
-_FINALIZE_ONLY = {"classify.py", "report.py", "plan.py", "production.py", "entities.py", "narrative.py", "review.py", "cli.py",
-                  "evaluate.py", "remake.py", "memory.py", "i18n.py", "visual.py", "readings.py", "__init__.py"}
+_FINALIZE_ONLY = {"classify.py", "report.py", "plan.py", "production.py", "generation.py", "playbook.py",
+                  "entities.py", "narrative.py", "review.py", "cli.py", "cli_en.py", "evaluate.py",
+                  "remake.py", "remake_qa.py", "drive.py", "code_remake.py", "clean_paths.py", "videomd.py", "pdf.py",
+                  "memory.py", "i18n.py", "visual.py", "readings.py", "__init__.py"}
 _DECODE_FP: str | None = None
 
 
@@ -1049,6 +1051,13 @@ def finalize(breakdown: dict, out: Path, engine: str | None = None) -> dict:
 
     from .aspects.base import PHOTOGRAPHIC
     from .aspects.grade import measure_frames
+    from .generation import load_intent
+
+    disk_intent = load_intent(out)
+    if disk_intent.get("mode") != "match" or disk_intent.get("model") or disk_intent.get("swaps") or "intent" not in breakdown:
+        if not disk_intent.get("model") and (breakdown.get("intent") or {}).get("model"):
+            disk_intent["model"] = breakdown["intent"]["model"]
+        breakdown["intent"] = disk_intent
 
     for rec in shot_records:  # breakdowns made before the grade aspect existed: measure it from the saved frames
         asp = rec.setdefault("aspects", {})

@@ -28,7 +28,7 @@ LABEL_ROUTE = {
 }
 NOTE = LangDict({
     "ai_video": "原片为 AI 生成：用视频模型重做；和哪些镜头一起生成、喂什么（参考原片、关键帧或首尾帧）按所选模型排，见复刻方案的生成单元",
-    "live_action": "原片为实拍：按拍摄方案（景别/机位/打光）重新拍摄；没有拍摄条件时才用 AI 图生视频近似（以首帧为参考）",
+    "live_action": "原片为实拍：按拍摄方案（景别/机位/打光）重新拍摄（若想改用 AI 生成，运行 rea-video plan --mode ai）",
     "avatar": "数字人口播：先克隆/合成配音，再用数字人模型由人像 + 音频驱动",
     "cg_3d": "3D 渲染：可以用视频模型近似（见复刻方案的生成单元）；需要精确多角度时走 3D 建模 + Blender 渲染",
     "code_render": "代码渲染：让编程能力强的模型（如 Claude Opus 5.5 及以上、Gemini 4 系列）按节奏表、关键帧和版式写代码重建，可以参考 HyperFrames、Remotion 这类 HTML 视频框架；100% 可控，不需要视频模型",
@@ -40,7 +40,7 @@ NOTE = LangDict({
     "film_footage": "影视片段：画面剪自已有的电影/电视剧/短剧，复刻要找到原片对应片段再剪（版权属于片方，商用要授权）；不用原片时，按同样景别、机位和打光自己拍，或用 AI 做近似画面",
 }, en={
     "ai_video": "Source is AI-generated: remake it with a video model; which shots share a call and what it is fed (the source clip, keyframes or first / last frames) depend on the chosen model, see the generation units in the remake plan",
-    "live_action": "Source is live action: reshoot per the shooting plan (shot size / camera setup / lighting); only fall back to AI image-to-video (first frame as reference) when a shoot is not possible",
+    "live_action": "Source is live action: reshoot per the shooting plan (shot size / camera setup / lighting); run rea-video plan --mode ai to remake with AI instead",
     "avatar": "Digital-avatar talking head: clone or synthesize the voice first, then drive an avatar model from a portrait + the audio",
     "cg_3d": "3D render: a video model gives an approximation (see the generation units); for precise multiple angles, model in 3D and render in Blender",
     "code_render": "Code render: have a strong coding model (such as Claude Opus 5.5 or later, or the Gemini 4 series) rebuild it in code from the rhythm, key frames and layout, optionally on an HTML video framework such as HyperFrames or Remotion; 100% controllable, no video model needed",
@@ -115,13 +115,27 @@ def hailuo_bracket(shot: dict) -> str:
         return HAILUO_MOVES[c]
     if move and str(move).lower() in HAILUO_MOVES:
         return HAILUO_MOVES[str(move).lower()]
-    feat = (shot.get("features") or {}).get("camera")
+    feat_d = shot.get("features") or {}
+    traj = feat_d.get("camera_traj")
+    if traj == "push_in":
+        return "[Push in]"
+    if traj == "pull_out":
+        return "[Pull out]"
+    if traj == "pan_left":
+        return "[Pan left]"
+    if traj == "pan_right":
+        return "[Pan right]"
+    if traj == "tilt_up":
+        return "[Tilt up]"
+    if traj == "tilt_down":
+        return "[Tilt down]"
+    feat = feat_d.get("camera")
     if feat == "handheld_like":
         return "[Shake]"
     if feat == "smooth_move":
         return "[Tracking shot]"
     if feat == "planar_zoom_pan":
-        z = (shot.get("features") or {}).get("zoom_per_s", 0.0)
+        z = feat_d.get("zoom_per_s", 0.0)
         return "[Push in]" if z > 0.01 else "[Pull out]" if z < -0.01 else "[Pan right]"
     return "[Static shot]"
 
@@ -134,7 +148,20 @@ def camera_move_words(shot: dict) -> tuple[str, str]:
     v = shot.get("review") or shot.get("vlm") or {}
     move = cm.get("move") or (v.get("camera_move") if v.get("camera_move") not in (None, "", "固定", "static") else None)
     if not move:
-        feat = (shot.get("features") or {}).get("camera")
+        feat_d = shot.get("features") or {}
+        traj = feat_d.get("camera_traj")
+        traj_map = {
+            "push_in": (T("镜头推近", "camera push-in"), "camera push-in"),
+            "pull_out": (T("镜头拉远", "camera pull-out"), "camera pull-out"),
+            "pan_left": (T("镜头左摇/左移", "camera pan/truck left"), "camera pan/truck left"),
+            "pan_right": (T("镜头右摇/右移", "camera pan/truck right"), "camera pan/truck right"),
+            "tilt_up": (T("镜头上摇/上移", "camera tilt/pedestal up"), "camera tilt/pedestal up"),
+            "tilt_down": (T("镜头下摇/下移", "camera tilt/pedestal down"), "camera tilt/pedestal down"),
+            "handheld": (T("手持镜头", "handheld camera"), "handheld camera"),
+        }
+        if traj in traj_map:
+            return traj_map[traj]
+        feat = feat_d.get("camera")
         if feat == "handheld_like":
             return T("手持镜头", "handheld camera"), "handheld camera"
         if feat == "smooth_move":

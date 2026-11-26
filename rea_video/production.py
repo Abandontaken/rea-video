@@ -275,10 +275,12 @@ def _style_line(shots: list[dict], aspect_ratio: str) -> str:
 
 
 # ---------------------------------------------------------------- shooting setups
-def _setups(shots: list[dict], sig: dict, thr: float, b: dict) -> list[dict]:
+def _setups(shots: list[dict], sig: dict, thr: float, b: dict, shoot_all: bool = False) -> list[dict]:
+    from .aspects.base import PHOTOGRAPHIC
     from .entities import cast as _cast
 
-    filmed = [r for r in shots if r["base"]["label"] in SHOOT_LABELS]
+    pool = PHOTOGRAPHIC if shoot_all else SHOOT_LABELS
+    filmed = [r for r in shots if r["base"]["label"] in pool]
     scenes: list[list[dict]] = []
     named: list[dict] = []
     # an image reader who named the scenes knows where each shot was filmed better than colour histograms do
@@ -348,10 +350,13 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
 
     shots = b["shots"]
     intent = gen_mod.load_intent(out)
-    if not intent.get("model") and (b.get("intent") or {}).get("model"):
+    if (b.get("intent") or {}).get("mode") in ("ai", "shoot") and intent.get("mode") == "match":
+        intent = gen_mod.clean_intent({**intent, **b["intent"]})
+    elif not intent.get("model") and (b.get("intent") or {}).get("model"):
         intent["model"] = b["intent"]["model"]
     b["intent"] = intent
-    gen_labels = tuple(ALL_GEN_LABELS if intent.get("generate") == "all" else GEN_LABELS)
+    shoot_mode = intent.get("mode") == "shoot" or intent.get("generate") == "none"
+    gen_labels = () if shoot_mode else tuple(ALL_GEN_LABELS if (intent.get("mode") == "ai" or intent.get("generate") == "all") else GEN_LABELS)
     planner = Planner()
     seg = planner.routing.get("segmentation", {}).get("defaults", {})
     thr = float(seg.get("same_scene_distance", 0.5))
@@ -389,7 +394,9 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
         if u:
             u.setdefault("reused", []).append({"shot": again, "from": src})
     plan: dict = {"model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")), "strategy": g["strategy"],
-                  "spec": g["spec"], "rules": g["rules"], "units": units, "intent": intent}
+                  "video_ref": g.get("video_ref", "none"), "spec": g["spec"], "rules": g["rules"], "units": units,
+                  "image_tasks": g.get("image_tasks", []), "discontinuous_montage": bool(g.get("discontinuous_montage")),
+                  "intent": intent}
     lim = g["spec"]
     gen_shots = sum(len(u["shots"]) for u in units)
     if units:
@@ -404,7 +411,7 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
             plan["prompting"] = planner.prompting[model["id"]]
         voice = ((b.get("audio") or {}).get("voice") or {}).get("present")
         vsrc = ((b.get("sound_sources") or {}).get("voice") or {}).get("source")
-        if lim.get("no_audio_with_ref_video") and g["strategy"] == "remix":
+        if lim.get("no_audio_with_ref_video") and g["strategy"] in ("remix", "edit"):
             plan["audio_note"] = T("当前模型在传参考视频时不能同时开启原生音频：人声、音效和配乐全部单独准备后在后期混入（若需音画同出对白，可改选支持参考视频出声的模型或改走关键帧模式）",
                                    "sending a reference video disables native audio on this model: prepare voice, sound effects and music separately and mix them in post")
         elif lim["native_audio"]:
@@ -427,8 +434,8 @@ def production_plan(b: dict, out: Path, engine: str = "minimax-h3") -> dict:
     prompts = gen_mod.load_prompts(out)
     plan["prompts"] = {k: v for k, v in prompts.items() if any(u["id"] == k for u in units)}
     plan["checks"] = gen_mod.checks(plan, intent, prompts, plan.get("prompting"), gen_s, root=out)
-    plan["drive"] = dance.units(b)
-    plan["shoot"] = _setups([r for r in shots if r["base"]["label"] not in gen_labels], sig, thr, b)
+    plan["drive"] = [] if shoot_mode else dance.units(b)
+    plan["shoot"] = _setups([r for r in shots if r["base"]["label"] not in gen_labels], sig, thr, b, shoot_all=shoot_mode)
     code, cur = [], []
     for r in shots + [None]:
         if r is not None and r["base"]["label"] in CODE_LABELS:

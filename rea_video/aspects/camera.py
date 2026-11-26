@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from ..i18n import LangDict, T, join, semi
 
-from .base import FILMED, PHOTOGRAPHIC, Aspect, Field, ShotCtx, field_table, register, seen, weighted_mode
+from .base import Aspect, Field, ShotCtx, field_table, filmed_shots, register, seen, weighted_mode
 
 SUPPORT = {"handheld_like": "handheld", "smooth_move": "moving", "static": "fixed", "static_with_subject_motion": "fixed",
            "planar_zoom_pan": "fixed"}
@@ -29,13 +29,16 @@ class Camera(Aspect):
     def measure(self, ctx: ShotCtx) -> dict:
         f = ctx.features
         cam = f.get("camera")
+        traj = f.get("camera_traj")
         move = None
         z, pan = f.get("zoom_per_s", 0.0) or 0.0, f.get("pan_px_per_s", 0.0) or 0.0
         if abs(z) > 0.01:
             move = T("推", "push-in") if z > 0 else T("拉", "pull-out")
-        elif pan > 6:
+        elif traj in ("push_in", "pull_out"):
+            move = T("推", "push-in") if traj == "push_in" else T("拉", "pull-out")
+        elif pan > 6 or traj in ("pan_left", "pan_right", "tilt_up", "tilt_down"):
             move = T("摇/移", "pan / track")
-        return {"support": SUPPORT.get(cam), "motion": cam, "move": move,
+        return {"support": SUPPORT.get(cam), "motion": cam, "move": move, "trajectory": traj,
                 "shake": round(float(f.get("sign_flip_rate", 0.0) or 0.0), 3)}
 
     def interpret(self, shot: dict) -> dict:
@@ -47,7 +50,7 @@ class Camera(Aspect):
                 "move": show(m.get("move"))}
 
     def summarize(self, shots: list[dict], b: dict) -> dict:
-        main = [r for r in shots if r["base"]["label"] in FILMED] or [r for r in shots if r["base"]["label"] in PHOTOGRAPHIC]
+        main = filmed_shots(shots, b)
         if not main:
             return {}
         res = {r["index"]: (r.get("aspects") or {}).get(self.key, {}).get("result") or {} for r in main}

@@ -45,7 +45,7 @@ def write_pdf(out: Path, browser: str | None = None, timeout: int = 120) -> Path
     tmp.write_text(src.read_text(encoding="utf-8").replace("<details>", "<details open>"), encoding="utf-8")
     pdf = out / "report.pdf"
     try:
-        r = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-pdf-header-footer", "--allow-file-access-from-files",
+        r = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
                             f"--print-to-pdf={pdf}", tmp.as_uri()], capture_output=True, text=True, timeout=timeout)
     finally:
         tmp.unlink(missing_ok=True)

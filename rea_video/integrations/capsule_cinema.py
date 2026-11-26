@@ -298,7 +298,7 @@ def write_handoff(b: dict, bdir: Path, jobs: list[dict]) -> Path:
     return out
 
 
-GEN_TYPE = {"remix": "multimodal", "keyframes": "multimodal", "frames": "first_last_frame", "text": "text_to_video"}
+GEN_TYPE = {"edit": "multimodal", "remix": "multimodal", "keyframes": "multimodal", "frames": "first_last_frame", "text": "text_to_video"}
 
 
 def _unit_model_options(u: dict, spec: dict, eng: str | None, vids: list[str], images: list[dict]) -> dict:
@@ -321,7 +321,7 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
     frame per shot (keyframes), the shot's first / last frame (frames) or nothing but text; the user's images first; the
     final prompt from remake/prompts.json, else the draft. Everything taken from the source has its subtitles erased."""
     from ..drive import scene_text
-    from ..generation import part_frame_name, redrawn_frame, unit_images
+    from ..generation import redrawn_frame, resolve_redrawn_frame, unit_frame_aliases, unit_images
 
     spec = plan.get("spec") or {}
     lo, hi = int(spec.get("min") or 1), int(spec.get("max") or 15)
@@ -343,23 +343,26 @@ def _unit_jobs(b: dict, bdir: Path, run_dir: Path, plan: dict, prompts: dict[str
                 params["video_paths"] = vids
             if images:
                 params["image_paths"] = [x["path"] for x in images]
+            bookend = False
             if u["strategy"] == "frames":
                 first, last = files.get((part, "first")), files.get((part, "last"))
                 if last:
                     params.update(start_image_path=first, end_image_path=last)
+                    bookend = True
                 else:
                     params.update(generation_type="image_to_video", image_path=first)
             jid = u["id"] if len(parts) == 1 else f"{u['id']}-{part}"
             times = [r["t"] for r in u["refs"] if r.get("keyframe") and not redrawn_frame(bdir, f"shot{int(r['keyframe']):03d}")]
             if u["strategy"] == "frames":
-                times += [t for key, t in _part_frame_times(u, part) if not redrawn_frame(bdir, part_frame_name(u, part, key))]
+                times += [t for key, t in _part_frame_times(u, part)
+                          if (part, key) in files and not resolve_redrawn_frame(bdir, unit_frame_aliases(u, part, key))]
             words = list(dict.fromkeys(w for t in times for w in scene_text(b, t)))
             warning = T("参考帧里还有画面内文字（{w}），模型可能照着生成：换成干净图，或确认有授权", "the reference frames still show text in the picture ({w}), which the model may copy: use a clean image or confirm you have the rights",
                         w=join(words[:6])) if words else None
             m_opts = _unit_model_options(u, spec, eng, vids, images)
             jobs.append({"shot": u["shots"][0], "id": jid, "unit": u["id"], "part": part, "parts": len(parts), "shots": u["shots"],
-                         "executor": "capsule_cinema", "label": u["label"], "strategy": u["strategy"], "images": images,
-                         "params": params, **({"model_options": m_opts} if m_opts else {}),
+                         "executor": "capsule_cinema", "label": u["label"], "strategy": u["strategy"], "bookend": bookend,
+                         "images": images, "params": params, **({"model_options": m_opts} if m_opts else {}),
                          "trim_to": round(secs, 3), "prompt_source": "final" if u["id"] in prompts else "draft",
                          **({"warning": warning} if warning else {})})
     return jobs
@@ -377,10 +380,11 @@ def ref_clips(b: dict, bdir: Path, unit: dict) -> dict[tuple[int, str], str]:
     """What one unit takes from the source, subtitles and laid-on text erased, written once into remake/refs/:
     reference clips ({(part, "@视频1"): path}), per-shot keyframes ({(1, "@图片3"): path}) and the first / last frame of
     a frames unit, per call ({(part, "first"): path, (part, "last"): path}). Files are named by span, so a re-plan never reuses a stale one."""
-    from ..drive import clean_clip, clean_frame
-    from ..generation import part_frame_name, redrawn_frame, wants_last_frame
+    from ..drive import clean_clip, clean_frame, control_clip
+    from ..generation import load_intent, part_frame_name, redrawn_frame, resolve_redrawn_frame, unit_frame_aliases, wants_last_frame
 
     d = bdir / "remake" / "refs"
+    intent = (b.get("production_plan") or {}).get("intent") or b.get("intent") or load_intent(bdir)
     out = {}
     for r in unit.get("refs") or []:
         if r.get("keyframe"):
@@ -390,18 +394,57 @@ def ref_clips(b: dict, bdir: Path, unit: dict) -> dict[tuple[int, str], str]:
             out[(1, r["tag"])] = str(f.resolve())
         elif r["tag"].startswith("@视频") and r.get("ranges"):
             a, z = r["ranges"][0][0], r["ranges"][-1][1]
-            f = d / f"{unit['id']}_p{r.get('part', 1)}_v{r['tag'][3:]}_{a:.1f}-{z:.1f}.mp4"
+            vkind = r.get("video_kind") or "source"
+            prefix = "v" if vkind == "source" else f"{vkind}_v"
+            f = d / f"{unit['id']}_p{r.get('part', 1)}_{prefix}{r['tag'][3:]}_{a:.1f}-{z:.1f}.mp4"
             if not f.is_file():
-                clean_clip(b, r["ranges"], f)
+                if vkind in ("depth", "edge"):
+                    control_clip(b, r["ranges"], f, kind=vkind)
+                else:
+                    clean_clip(b, r["ranges"], f)
             out[(r.get("part", 1), r["tag"])] = str(f.resolve())
     if unit.get("strategy") == "frames":
         for part in range(1, max(1, int(unit.get("calls") or 1)) + 1):
+            first_rd = resolve_redrawn_frame(bdir, unit_frame_aliases(unit, part, "first"))
+            last_rd = resolve_redrawn_frame(bdir, unit_frame_aliases(unit, part, "last"))
+            subject_redesigned = (first_rd is not None or bool(intent.get("swaps"))
+                                  or str(intent.get("image_ref") or "auto") not in ("", "auto"))
             for key, t in _part_frame_times(unit, part):
-                if key == "last" and not wants_last_frame(unit):
-                    continue
+                if key == "last":
+                    if not wants_last_frame(unit):
+                        continue
+                    # Never pair a redesigned/swapped first frame with an unredrawn source last frame (causes mid-shot morphing back)
+                    if subject_redesigned and last_rd is None:
+                        continue
                 name = part_frame_name(unit, part, key)
-                f = redrawn_frame(bdir, name) or d / f"{name}_{t:.2f}.jpg"
+                rd = first_rd if key == "first" else last_rd
+                f = rd or d / f"{name}_{t:.2f}.jpg"
                 if not f.is_file():
                     clean_frame(b, t, f)
                 out[(part, key)] = str(f.resolve())
     return out
+
+
+def image_ref_frames(b: dict, bdir: Path, plan: dict) -> list[Path]:
+    """Export cleaned/depth/edge still reference frames into remake/refs/ when image_ref is explicitly set."""
+    from ..drive import clean_frame, control_frame
+
+    iref = str((plan.get("intent") or {}).get("image_ref") or "auto").strip().lower()
+    if iref not in ("source", "depth", "edge"):
+        return []
+    d = bdir / "remake" / "refs"
+    written: list[Path] = []
+    for t in plan.get("image_tasks") or []:
+        if t.get("role") != "first_frame":
+            continue
+        idx = int(t["shot"])
+        ts = float(t.get("t") or 0.0)
+        suffix = "clean" if iref == "source" else iref
+        dst = d / f"shot{idx:03d}_{suffix}.jpg"
+        if not dst.is_file():
+            if iref == "source":
+                clean_frame(b, ts, dst)
+            else:
+                control_frame(b, ts, dst, kind=iref)
+        written.append(dst)
+    return written

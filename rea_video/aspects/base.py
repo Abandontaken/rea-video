@@ -22,10 +22,19 @@ import numpy as np
 
 from ..i18n import T
 
-# shots whose picture is photographic enough for camera / light analysis. Live action gets a shooting plan; AI, 3D
-# and avatar shots get the same measurements as a description of the picture (useful for generation prompts).
+# shots whose picture is photographic enough for per-shot framing / colour analysis (used internally by generation prompts,
+# and surfaced as shooting setups when the user explicitly asks for `mode: shoot`).
 PHOTOGRAPHIC = ("live_action", "avatar", "ai_video", "cg_3d", "stop_motion", "film_footage")
-FILMED = ("live_action", "avatar", "stop_motion", "film_footage")
+# shots actually filmed by a camera / creator: only videos with these (or explicit `mode: shoot`) get camera / lighting / gear reports.
+OWN_FILMED = ("live_action", "stop_motion")
+FILMED = OWN_FILMED
+
+
+def filmed_shots(shots: list[dict], b: dict | None = None) -> list[dict]:
+    """Shots whose camera, lighting and editing setups belong in the report."""
+    mode = str((((b or {}).get("intent") or {}).get("mode") or "")).strip().lower()
+    pool = PHOTOGRAPHIC if mode == "shoot" else OWN_FILMED
+    return [r for r in shots if r["base"]["label"] in pool]
 
 
 @dataclass

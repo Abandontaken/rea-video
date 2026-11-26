@@ -17,7 +17,7 @@ import numpy as np
 
 from ..i18n import T, join, semi
 
-from .base import PHOTOGRAPHIC, Aspect, Field, ShotCtx, field_table, register, weighted_median
+from .base import Aspect, Field, ShotCtx, field_table, filmed_shots, register, weighted_median
 
 MEASURES = ("sat", "contrast", "black", "white", "shadow_b", "highlight_b", "mean_b", "mean_l", "bright_share", "dark_share",
             "bright_sat", "hue_bins")
@@ -103,8 +103,8 @@ class Grade(Aspect):
         return words(m)
 
     def summarize(self, shots: list[dict], b: dict) -> dict:
-        main = [r for r in shots if r["base"]["label"] in PHOTOGRAPHIC
-                and ((r.get("aspects") or {}).get(self.key) or {}).get("measured")]
+        main = [r for r in filmed_shots(shots, b)
+                if ((r.get("aspects") or {}).get(self.key) or {}).get("measured")]
         if not main:
             return {}
         ms = [(r["aspects"][self.key]["measured"], r["duration"]) for r in main]

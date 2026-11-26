@@ -22,7 +22,7 @@ _INTENSITY_ALIASES = {"轻": "low", "弱": "low", "小": "low", "1": "low", "2":
 ACTING_LABELS = ("live_action", "ai_video", "avatar", "cg_3d", "anim_2d", "stop_motion", "film_footage")
 
 # shared by the VLM prompt and the review instructions so both readers answer the same question
-GUIDE = """画面里有人物、动物、卡通角色或数字人在表演（脸或肢体看得清）时填 performance，否则写 null（空镜、商品特写、只有手、远景看不清脸）：
+GUIDE = """画面里有人物、动物、卡通角色或数字人在表演（脸或肢体有情绪/神态演进）时填 performance，否则写 null（空镜、商品特写、只有手、远景看不清脸，或纯静态摆拍造型仅靠大风吹发/镜头推拉营造氛围且面部无表情变化的视觉展示镜头也填 null，避免给静态眼神填 low 压制画面物理动态）：
 - who：谁在演（和角色表里的编号或称呼一致）
 - emotion：一个主情绪词（平静 / 开心 / 期待 / 好奇 / 惊讶 / 委屈 / 生气 / 紧张 / 得意 / 无奈 …）；一个镜头只写一个主情绪
 - intensity：low|mid|high，按看到的幅度写；多数口播、带货是 low 或 mid

@@ -219,32 +219,97 @@ def _units(b: dict, shots: list[int] | None) -> list[dict]:
     return (b.get("production_plan") or {}).get("drive") or []
 
 
-def _depth_model():
-    """Depth Anything V2 Small through transformers, when installed; None otherwise (the README then gives the
-    Video Depth Anything command, which is the better tool: it is made for video and does not flicker)."""
+def _onnx_depth_predictor():
+    """Lightweight ONNX Depth-Anything-V2-Small runner when onnxruntime + huggingface_hub are available."""
     try:
-        import torch  # noqa: F401
-        from transformers import pipeline
+        import onnxruntime as ort
+        from huggingface_hub import hf_hub_download
     except ImportError:
         return None
+    for fname in ("onnx/model_quantized.onnx", "onnx/model_fp16.onnx", "onnx/model.onnx"):
+        try:
+            model_path = hf_hub_download("onnx-community/depth-anything-v2-small", fname)
+            sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            in_name = sess.get_inputs()[0].name
+
+            def _pred(frame_bgr: np.ndarray) -> np.ndarray:
+                rgb = cv2.cvtColor(cv2.resize(frame_bgr, (518, 518), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+                std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+                inp = np.transpose((rgb - mean) / std, (2, 0, 1))[None, ...]
+                out = sess.run(None, {in_name: inp})[0]
+                return np.asarray(out, dtype=np.float32).squeeze()
+
+            return _pred
+        except Exception:
+            continue
+    return None
+
+
+def _depth_model():
+    """Depth Anything V2 Small through transformers or onnxruntime; None when neither is available."""
     try:
-        return pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf")
-    except Exception as e:  # network, weights, device
-        LOG.warning("depth model unavailable: %s", e)
-        return None
+        import torch  # noqa: F401
+        from PIL import Image
+        from transformers import pipeline
+
+        pipe = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf")
+        return lambda f: np.asarray(pipe(Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)))["predicted_depth"].squeeze(), np.float32)
+    except Exception:
+        pass
+    onnx_fn = _onnx_depth_predictor()
+    if onnx_fn is not None:
+        return onnx_fn
+    LOG.warning("Depth-Anything-V2 unavailable (install transformers or onnxruntime+huggingface_hub); falling back to local spatial cue")
+    return None
+
+
+def _fallback_depth_array(frame_bgr: np.ndarray) -> np.ndarray:
+    """Zero-dependency spatial depth proxy (local sharpness + bilateral luminance) when no neural depth weights exist."""
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    smooth = cv2.bilateralFilter(gray, 7, 0.2, 7)
+    gx = cv2.Sobel(smooth, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3)
+    sharp = cv2.GaussianBlur(np.hypot(gx, gy), (21, 21), 0)
+    if sharp.max() > 1e-6:
+        sharp = sharp / sharp.max()
+    return 0.65 * sharp + 0.35 * smooth
+
+
+def _edge_array(frame_bgr: np.ndarray) -> np.ndarray:
+    """Soft multi-scale structural edge map (0..255 uint8) stripping colour, texture and small print while keeping silhouettes."""
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    filt = cv2.bilateralFilter(gray, 7, 55, 55)
+    fine = cv2.Canny(filt, 40, 110).astype(np.float32)
+    coarse = cv2.Canny(cv2.GaussianBlur(filt, (5, 5), 0), 75, 175).astype(np.float32)
+    comb = np.clip(0.45 * fine + 0.75 * coarse, 0, 255)
+    return cv2.GaussianBlur(comb, (3, 3), 0).astype(np.uint8)
+
+
+def _is_hard_cut(a: np.ndarray | None, b_img: np.ndarray) -> bool:
+    if a is None:
+        return True
+    ha = cv2.calcHist([cv2.cvtColor(cv2.resize(a, (64, 64)), cv2.COLOR_BGR2HSV)], [0, 1], None, [12, 8], [0, 180, 0, 256])
+    hb = cv2.calcHist([cv2.cvtColor(cv2.resize(b_img, (64, 64)), cv2.COLOR_BGR2HSV)], [0, 1], None, [12, 8], [0, 180, 0, 256])
+    cv2.normalize(ha, ha)
+    cv2.normalize(hb, hb)
+    return float(cv2.compareHist(ha, hb, cv2.HISTCMP_BHATTACHARYYA)) > 0.38
 
 
 def _write_depth(model, frames: list[np.ndarray], path: Path, fps: float) -> None:
-    from PIL import Image
-
-    raw = [np.asarray(model(Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)))["predicted_depth"].squeeze(), np.float32) for f in frames]
+    pred = model if callable(model) else _fallback_depth_array
+    raw = [pred(f) for f in frames]
     lo, hi = np.percentile(np.stack(raw), [2, 98])  # one range for the whole clip: per-frame ranges flicker
     h, w = frames[0].shape[:2]
-    prev = None
+    prev, prev_bgr = None, None
     enc = _encoder(path, w, h, fps)
-    for d in raw:
+    for f_bgr, d in zip(frames, raw):
         d = np.clip((d - lo) / max(hi - lo, 1e-6), 0, 1)
-        prev = d if prev is None else 0.6 * d + 0.4 * prev
+        if _is_hard_cut(prev_bgr, f_bgr):
+            prev = d
+        else:
+            prev = 0.65 * d + 0.35 * prev
+        prev_bgr = f_bgr
         g = cv2.resize((prev * 255).astype(np.uint8), (w, h), interpolation=cv2.INTER_LINEAR)
         enc.stdin.write(cv2.cvtColor(g, cv2.COLOR_GRAY2BGR).tobytes())
     enc.stdin.close()
@@ -269,10 +334,21 @@ def _sheet(rows: list[list[np.ndarray]], labels: list[str], path: Path) -> None:
     write_image(path, np.concatenate([np.pad(r, ((0, 0), (0, w - r.shape[1]), (0, 0))) for r in lines], axis=0))
 
 
+def _resolve_src(b: dict, out_path: Path) -> Path:
+    src = Path(b["source"]["path"])
+    if src.is_file() or src.is_absolute():
+        return src
+    for anc in (out_path, out_path.parent, out_path.parent.parent, out_path.parent.parent.parent):
+        cand = anc / src
+        if cand.is_file():
+            return cand
+    return src
+
+
 def clean_clip(b: dict, ranges: list[list[float]], path: Path, width: int = 720, crf: int = 26) -> Path:
     """The source over `ranges` (joined when there are several) with subtitles, styled text and stickers erased and no
     sound: a reference video for a remix, so the model takes the shots and pacing but not the old words."""
-    src = Path(b["source"]["path"])
+    src = _resolve_src(b, path)
     info = video_info(src)
     boxes = overlays(b, persistent=True)
     w, h = scaled_size(info, min(width, info.width or width))
@@ -293,7 +369,7 @@ def clean_clip(b: dict, ranges: list[list[float]], path: Path, width: int = 720,
 
 def clean_frame(b: dict, t: float, path: Path, width: int = 1080) -> Path:
     """One source frame at t with the edit's text erased: a composition reference for a model without reference video."""
-    src = Path(b["source"]["path"])
+    src = _resolve_src(b, path)
     info = video_info(src)
     boxes = overlays(b, persistent=True)
     w, _ = scaled_size(info, min(width, info.width or width))
@@ -306,6 +382,78 @@ def clean_frame(b: dict, t: float, path: Path, width: int = 1080) -> Path:
     return path
 
 
+_CACHED_DEPTH_FN = False
+
+
+def _shared_depth_fn():
+    global _CACHED_DEPTH_FN
+    if _CACHED_DEPTH_FN is False:
+        _CACHED_DEPTH_FN = _depth_model()
+    return _CACHED_DEPTH_FN
+
+
+def control_clip(b: dict, ranges: list[list[float]], path: Path, kind: str = "depth",
+                 width: int = 720, crf: int = 22, use_neural_depth: bool = True) -> Path:
+    """Appearance-free structural reference video ('depth' or 'edge') over `ranges`, overlays erased first,
+    temporal EMA reset at hard cuts so cuts stay frame-exact."""
+    src = _resolve_src(b, path)
+    info = video_info(src)
+    boxes = overlays(b, persistent=True)
+    w, h = scaled_size(info, min(width, info.width or width))
+    fps = info.fps if 0 < info.fps <= 60 else 30.0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cleaned: list[np.ndarray] = []
+    for a, z in ranges:
+        for i, f in enumerate(iter_frames(src, info, w, start=a, duration=z - a, fps=fps)):
+            t = a + i / fps
+            cleaned.append(erase(f, _mask(boxes, t, f.shape[1], f.shape[0]) if boxes else None))
+    if not cleaned:
+        return path
+    if kind == "depth":
+        fn = _shared_depth_fn() if use_neural_depth else None
+        _write_depth(fn, cleaned, path, fps)
+        return path
+    enc = _encoder(path, w, h, fps, crf=crf)
+    prev, prev_bgr = None, None
+    try:
+        for f in cleaned:
+            e = _edge_array(f).astype(np.float32)
+            if _is_hard_cut(prev_bgr, f) or prev is None:
+                prev = e
+            else:
+                prev = 0.75 * e + 0.25 * prev
+            prev_bgr = f
+            enc.stdin.write(cv2.cvtColor(prev.astype(np.uint8), cv2.COLOR_GRAY2BGR).tobytes())
+    finally:
+        enc.stdin.close()
+        enc.wait()
+    return path
+
+
+def control_frame(b: dict, t: float, path: Path, kind: str = "depth",
+                  width: int = 1080, use_neural_depth: bool = True) -> Path:
+    """Single appearance-free structural frame ('depth' or 'edge') at t, overlays erased first."""
+    src = _resolve_src(b, path)
+    info = video_info(src)
+    boxes = overlays(b, persistent=True)
+    w, _ = scaled_size(info, min(width, info.width or width))
+    for f in iter_frames(src, info, w, start=t, duration=0.1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        m = _mask(boxes, t, f.shape[1], f.shape[0]) if boxes else None
+        clean = f if m is None else cv2.inpaint(f, _strokes(f, m), 3, cv2.INPAINT_TELEA)
+        if kind == "depth":
+            fn = (_shared_depth_fn() if use_neural_depth else None) or _fallback_depth_array
+            d = fn(clean)
+            lo, hi = np.percentile(d, [2, 98])
+            norm = np.clip((d - lo) / max(hi - lo, 1e-6), 0, 1)
+            g = cv2.resize((norm * 255).astype(np.uint8), (clean.shape[1], clean.shape[0]), interpolation=cv2.INTER_LINEAR)
+            write_image(path, cv2.cvtColor(g, cv2.COLOR_GRAY2BGR))
+        else:
+            write_image(path, cv2.cvtColor(_edge_array(clean), cv2.COLOR_GRAY2BGR))
+        break
+    return path
+
+
 def drive(out: Path, shots: list[int] | None = None, depth: bool = False, clean: bool = True,
           prefer: float | None = None, max_s: float | None = None) -> dict:
     b = read_json(out / "breakdown.json")
@@ -313,7 +461,7 @@ def drive(out: Path, shots: list[int] | None = None, depth: bool = False, clean:
     if not units:
         raise ValueError(T("没有动作驱动单元：先在看图复核里给舞蹈 / 动作镜头填 performance.move 并 apply-review，或用 --shots 指定镜头",
                            "no motion-drive units: mark the dance / action shots with performance.move in the review and apply it, or pass --shots"))
-    src = Path(b["source"]["path"])
+    src = _resolve_src(b, out)
     info = video_info(src)
     lim = dance.segment_limits()
     if prefer:

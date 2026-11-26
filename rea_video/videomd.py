@@ -497,8 +497,11 @@ def write(b: dict, out: Path) -> Path:
 
     d = out / DIR
     if d.is_dir():
-        shutil.rmtree(d)  # generated: a re-run with a different shot count must not leave stale shot files
-    (d / "shots").mkdir(parents=True)
+        shutil.rmtree(d, ignore_errors=True)  # generated: a re-run with a different shot count must not leave stale shot files
+        for old in list(d.rglob("*")) if d.is_dir() else []:
+            if old.is_file():
+                old.unlink(missing_ok=True)
+    (d / "shots").mkdir(parents=True, exist_ok=True)
     files: list[tuple[str, str, str, int]] = []
 
     def put(rel: str, text: str, title: str, when: str) -> None:
@@ -547,11 +550,18 @@ def write(b: dict, out: Path) -> Path:
             ("frames/", T("画面场景：每场景原尺寸帧、画上去那一层的抠图和采样点、测量值", "picture scenes: full-size frames, the drawn layer cut out and sampled, measurements"),
              T("复刻代码渲染画面", "remaking rendered pictures")),
             ("audio.png", T("声音波形和节拍图", "waveform and beat chart"), T("看节奏", "seeing the rhythm"))):
+        if rel == "packaging/" and not any(f[0] == f"{DIR}/packaging.md" for f in files):
+            continue
         if (out / rel.rstrip("/")).exists():
             files.append((rel, what, when, 0))
     entry = out / ENTRY
     card = _card(b, scenes=len(scenes), transcript=transcript_rel)
     entry.write_text(_front(card, _overview(b, files)), encoding="utf-8")
+    import subprocess
+    import sys
+
+    if sys.platform == "darwin" and shutil.which("dot_clean"):
+        subprocess.run(["dot_clean", "-m", str(d), str(out)], capture_output=True, check=False)
     return entry
 
 

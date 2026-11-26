@@ -47,8 +47,23 @@ INTENT_FILE = Path("remake") / "intent.yaml"
 REDRAWN_DIR = Path("remake") / "redrawn"
 PROMPTS_FILE = Path("remake") / "prompts.json"
 
-STRATEGY_ZH = {"remix": ("参考原片改写", "remix of the source"), "keyframes": ("关键帧参考多镜头", "multi-shot from source keyframes"),
-               "frames": ("首帧 / 首尾帧逐镜", "first / last frame, shot by shot"), "text": ("文生视频", "text to video")}
+STRATEGY_ZH = {
+    "edit": ("原视频动作锁定编辑（锁死切镜/运镜/姿态，仅做增量改观）", "motion-preserving video edit (locks cuts, camera & poses; delta look edit only)"),
+    "remix": ("多模态参考生视频（参考视频 + 参考图/音频）", "multimodal reference-to-video (reference video + images/audio)"),
+    "keyframes": ("多图关键帧参考生视频（一次多镜头）", "multi-shot keyframe reference-to-video"),
+    "frames": ("图生视频（首帧 / 首尾帧逐镜）", "image-to-video (first / last frame per shot)"),
+    "text": ("文生视频（纯文本提示词）", "text-to-video (prompt only)"),
+}
+VALID_MODES = ("match", "ai", "shoot")
+VALID_STRATEGIES = ("edit", "remix", "keyframes", "frames", "text")
+VALID_VIDEO_REFS = ("auto", "none", "source", "depth", "edge")
+VALID_IMAGE_REFS = ("auto", "none", "source", "depth", "edge")
+VIDEO_REF_ZH = {
+    "none": ("不传原视频（纯关键帧 / 提示词驱动）", "no reference video (keyframes / prompt only)"),
+    "source": ("原视频直接参考（RGB 擦除字幕）", "raw source video reference (subtitles erased)"),
+    "depth": ("深度视频参考（锁 3D 空间纵深与运镜、剥离原片外观）", "depth video reference (locks 3D depth & camera, strips source look)"),
+    "edge": ("边缘结构视频参考（锁轮廓构图与节奏、重绘材质光影）", "structural edge video reference (locks silhouettes & pacing, redraws look)"),
+}
 
 
 def strategy_name(s: str) -> str:
@@ -56,13 +71,42 @@ def strategy_name(s: str) -> str:
     return T(zh, en)
 
 
+def video_ref_name(vref: str) -> str:
+    zh, en = VIDEO_REF_ZH.get(vref, (vref, vref))
+    return T(zh, en)
+
+
 # ---------------------------------------------------------------- intent
 def clean_intent(d) -> dict:
     """The intent as the planner reads it; anything malformed is dropped, not guessed."""
     d = d if isinstance(d, dict) else {}
-    out: dict = {"generate": "all" if str(d.get("generate", "ai")).strip().lower() == "all" else "ai", "swaps": []}
+    raw_mode = str(d.get("mode") or "").strip().lower()
+    raw_gen = str(d.get("generate") or "").strip().lower()
+    if raw_mode in VALID_MODES:
+        mode = raw_mode
+    elif raw_gen == "all":
+        mode = "ai"
+    elif raw_gen == "none":
+        mode = "shoot"
+    else:
+        mode = "match"
+    gen_val = "all" if mode == "ai" else ("none" if mode == "shoot" else "ai")
+    out: dict = {"mode": mode, "generate": gen_val, "swaps": []}
     if isinstance(d.get("model"), str) and d["model"].strip():
         out["model"] = d["model"].strip()
+    st = str(d.get("strategy") or "").strip().lower()
+    if st in VALID_STRATEGIES:
+        out["strategy"] = st
+    vref = str(d.get("video_ref") or "").strip().lower()
+    if vref in VALID_VIDEO_REFS and vref != "auto":
+        out["video_ref"] = vref
+    iref = str(d.get("image_ref") or "").strip().lower()
+    if iref in VALID_IMAGE_REFS and iref != "auto":
+        out["image_ref"] = iref
+    if isinstance(d.get("max_images"), (int, float)) and int(d["max_images"]) > 0:
+        out["max_images"] = int(d["max_images"])
+    if isinstance(d.get("max_ref_video_s"), (int, float)) and float(d["max_ref_video_s"]) > 0:
+        out["max_ref_video_s"] = float(d["max_ref_video_s"])
     for s in d.get("swaps") or []:
         if not isinstance(s, dict) or not (s.get("to") or s.get("image")):
             continue
@@ -71,6 +115,8 @@ def clean_intent(d) -> dict:
         out["swaps"].append({"from": str(s.get("from") or "").strip(), "to": str(s.get("to") or "").strip(), "image": img})
     if d.get("notes"):
         out["notes"] = str(d["notes"]).strip()
+    if d.get("native_dialogue"):
+        out["native_dialogue"] = True
     return out
 
 
@@ -87,7 +133,9 @@ def load_intent(out: Path) -> dict:
 def save_intent(out: Path, intent: dict) -> Path:
     p = Path(out) / INTENT_FILE
     p.parent.mkdir(parents=True, exist_ok=True)
-    keep = {k: v for k, v in intent.items() if k in ("model", "generate", "swaps", "notes") and v not in (None, "", [])}
+    keep_keys = ("model", "mode", "generate", "strategy", "video_ref", "image_ref", "max_images", "max_ref_video_s",
+                 "swaps", "notes", "native_dialogue")
+    keep = {k: v for k, v in intent.items() if k in keep_keys and v not in (None, "", [])}
     p.write_text(yaml.safe_dump(keep, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return p
 
@@ -111,31 +159,40 @@ def save_prompts(out: Path, prompts: dict[str, str]) -> Path:
 
 
 # ---------------------------------------------------------------- what the model takes
-def spec_of(model: dict | None) -> dict:
+def spec_of(model: dict | None, intent: dict | None = None) -> dict:
     m = model or {}
+    it = intent or {}
     lim, prim = m.get("limits") or {}, set(m.get("primitives") or [])
     d, refs = lim.get("duration_s") or {}, lim.get("refs") or {}
     rv = (lim.get("ref_video_s") or {}).get("max")
     multi_ref = "video.multi_reference" in prim
     plan = m.get("planning") or {}
+    max_img_ov = int(it["max_images"]) if it.get("max_images") else None
+    max_rv_ov = float(it["max_ref_video_s"]) if it.get("max_ref_video_s") else None
+    base_images = int(refs.get("image") or (UNKNOWN_IMAGES if multi_ref else 0))
     return {"max": float(d.get("max") or 10), "min": float(d.get("min") or 0),
             "steps": [float(x) for x in d.get("steps") or []], "steps_with_refs": [float(x) for x in lim.get("duration_with_refs_s") or []],
             "multi_shot": "video.multi_shot" in prim, "shots": int(lim.get("shots_per_generation") or 0) or None,
-            "ref_video": "video.reference_video" in prim, "ref_videos": int(refs.get("video") or 1),
-            "ref_total": float(rv) if rv else REF_CLIP_S * max(1, int(refs.get("video") or 1)),
-            "multi_ref": multi_ref, "images": int(refs.get("image") or (UNKNOWN_IMAGES if multi_ref else 0)),
-            "images_stated": bool(refs.get("image")), "prefer": plan.get("strategy"), "plan_images": plan.get("images"),
+            "ref_video": "video.reference_video" in prim or bool(max_rv_ov), "ref_videos": int(refs.get("video") or 1),
+            "control_video": "video.control_video" in prim,
+            "edit_v2v": "video.edit_v2v" in prim,
+            "pinned_keyframes": "video.keyframes" in prim,
+            "ref_total": max_rv_ov if max_rv_ov else (float(rv) if rv else REF_CLIP_S * max(1, int(refs.get("video") or 1))),
+            "multi_ref": multi_ref or bool(max_img_ov), "images": max_img_ov if max_img_ov is not None else base_images,
+            "images_stated": bool(refs.get("image") or max_img_ov),
+            "prefer": plan.get("strategy"), "plan_images": None if max_img_ov is not None else plan.get("images"),
             "no_real_faces": bool(plan.get("no_real_faces")),
             "no_audio_with_ref_video": bool(plan.get("no_audio_with_ref_video")),
             "max_hardcut_s": float(plan["max_hardcut_s"]) if plan.get("max_hardcut_s") else None,
             "api_params": dict(plan["api_params"]) if isinstance(plan.get("api_params"), dict) else {},
             "first": "video.i2v_first_frame" in prim, "last": "video.i2v_first_last" in prim,
+            "ref_audio": "video.reference_audio" in prim,
             "exclusive": bool(lim.get("exclusive_inputs")), "native_audio": bool((m.get("audio") or {}).get("native"))}
 
 
 def effective_native_audio(spec: dict, strategy: str) -> bool:
     """Whether the chosen strategy can actually generate native sound on this model."""
-    return bool(spec.get("native_audio")) and not (strategy == "remix" and spec.get("no_audio_with_ref_video"))
+    return bool(spec.get("native_audio")) and not (strategy in ("remix", "edit") and spec.get("no_audio_with_ref_video"))
 
 
 def call_seconds(spec: dict, secs: float, refs: bool = False) -> int:
@@ -153,15 +210,65 @@ def planned_images(spec: dict) -> int:
     return min(spec["images"], spec.get("plan_images") or spec["images"])
 
 
-def choose_strategy(spec: dict, n_own: int) -> str:
+def is_discontinuous_montage(b: dict | None, gen_shot_ids: list[int], new_scene: set[int], own: list[dict]) -> bool:
+    """Routing rule S01 guard: whether generated shots form an anthology/montage of disjoint one-off characters where
+    packing into an unpinned `video.multi_reference` pool causes cross-shot identity bleed and unpinned poses."""
+    if not b or len(gen_shot_ids) < 3 or own:
+        return False
+    chars = entities.cast(b).get("characters") or []
+    if not chars:
+        return False
+    gen_set = set(gen_shot_ids)
+    shot_chars: dict[int, set[str]] = {}
+    has_recurring = False
+    for k, ch in enumerate(chars):
+        s_in = [int(i) for i in (ch.get("shots") or []) if int(i) in gen_set]
+        if len(s_in) >= 2:
+            has_recurring = True
+        cid = str(ch.get("id") or ch.get("name") or f"C{k}")
+        for i in s_in:
+            shot_chars.setdefault(i, set()).add(cid)
+    if has_recurring or len(shot_chars) < 3:
+        return False
+    pairs = [(a, c) for a, c in zip(gen_shot_ids, gen_shot_ids[1:]) if a in shot_chars and c in shot_chars]
+    if len(pairs) < 2:
+        return False
+    disjoint = sum(1 for a, c in pairs if not (shot_chars[a] & shot_chars[c]))
+    scene_jumps = sum(1 for _, c in zip(gen_shot_ids, gen_shot_ids[1:]) if c in new_scene)
+    return disjoint >= 0.75 * len(pairs) and (disjoint == len(pairs) or scene_jumps >= 0.5 * (len(gen_shot_ids) - 1))
+
+
+def choose_strategy(spec: dict, n_own: int, override: str | None = None, video_ref: str | None = None,
+                    discontinuous: bool = False) -> str:
+    vref = (video_ref or "").strip().lower()
+    if override == "edit" and vref not in ("none", "depth", "edge") and (spec.get("edit_v2v") or spec.get("ref_video")):
+        return "edit"
+    if vref in ("depth", "edge") and (spec.get("control_video") or spec.get("ref_video")):
+        return "remix"
+    if vref == "source":
+        if spec.get("ref_video"):
+            return "remix"
+        if spec.get("edit_v2v"):
+            return "edit"
+    if override == "text":
+        return "text"
+    if override == "frames" and spec["first"]:
+        return "frames"
+    if vref != "none" and override == "remix" and spec["ref_video"] and spec["ref_total"] >= REMIX_MIN_REF_S:
+        return "remix"
+    if override == "keyframes" and spec["multi_shot"] and (spec["multi_ref"] or spec.get("pinned_keyframes")) and planned_images(spec) >= n_own + 1:
+        return "keyframes"
     pref = spec.get("prefer")
     if pref == "text":
         return "text"
     if pref == "frames" and spec["first"]:
         return "frames"
-    if spec["ref_video"] and (spec["multi_shot"] or pref == "remix") and pref in (None, "remix") and spec["ref_total"] >= REMIX_MIN_REF_S:
+    if vref != "none" and spec["ref_video"] and (spec["multi_shot"] or pref == "remix") and pref in (None, "remix") and spec["ref_total"] >= REMIX_MIN_REF_S:
         return "remix"
-    if spec["multi_shot"] and spec["multi_ref"] and pref in (None, "keyframes") and planned_images(spec) >= n_own + 2:
+    # S01: disjoint multi-character montages without timestamp-pinned `video.keyframes` route to per-shot `frames` I2V
+    if discontinuous and not spec.get("pinned_keyframes") and spec["first"]:
+        return "frames"
+    if spec["multi_shot"] and (spec["multi_ref"] or spec.get("pinned_keyframes")) and (pref in (None, "keyframes") or vref == "none") and planned_images(spec) >= n_own + 2:
         return "keyframes"
     if spec["multi_shot"] and not spec["multi_ref"] and n_own == 0:
         return "text"
@@ -306,10 +413,16 @@ def _shot_audio(b: dict | None, r: dict, want_dialogue: bool, want_sfx: bool) ->
     if want_sfx:
         for e in (b.get("audio_plan") or {}).get("sfx_merged") or []:
             t = e.get("t")
-            if isinstance(t, (int, float)) and r["start"] <= t < r["end"] and e.get("confidence") != "low" and e.get("sync_with") != "text_pop":
-                desc = str(e.get("description") or e.get("type") or "").strip()
-                if desc and desc not in sfx:
-                    sfx.append(desc)
+            if not (isinstance(t, (int, float)) and r["start"] <= t < r["end"]):
+                continue
+            if e.get("confidence") == "low" or e.get("sync_with") == "text_pop" or e.get("on"):
+                continue
+            # unverified stem-separator transients (drum hits / clicks on a music bed) must not pollute video prompts
+            if e.get("source") == "effects_stem" and not e.get("description"):
+                continue
+            desc = str(e.get("description") or e.get("type") or "").strip()
+            if desc and desc not in sfx:
+                sfx.append(desc)
     return dlg, sfx
 
 
@@ -409,7 +522,7 @@ def _tail_lines(raw_tail: list[str] | None, brief: list[dict], ambience: str = "
 
 
 def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps: list[dict], style, fmt: dict | None = None,
-           ambience: str = "", lint_rules: dict | None = None) -> str:
+           ambience: str = "", lint_rules: dict | None = None, video_ref: str = "source") -> str:
     """A prompt from the brief: what to keep, what changes, shot by shot. `fmt` (the model's `draft` block in
     prompting.yaml) sets the prompt language, the shot lines, how images / videos are named, camera brackets, dialogue
     syntax and the fixed fields, so the draft is already in the model's own shape."""
@@ -425,59 +538,79 @@ def _draft(strategy: str, refs: list[dict], brief: list[dict], swaps: list[dict]
         en = lang() == "en"
         vids = T("、", ", ").join(dict.fromkeys(r["tag"] for r in refs if r["tag"].startswith("@视频")))
         head = []
-        if strategy == "remix":
-            head.append(T("{v} 是原片：照它的分镜生成，镜头数、每个镜头的时长、景别、机位、运镜、动作和剪辑节奏都跟它一致，画面内容照下面写",
-                          "{v} is the source: follow its shots (count, length, size, camera, movement, action and cutting rhythm); the picture is as written below", v=vids))
+        if strategy == "edit":
+            head.append(T("{v} 是基准原片：严格锁死它的每一个切镜时间点、3D 机位运镜轨迹、主体朝向、肢体姿态变化节奏与背景空间构图，不做二次分镜重演；仅体现下面的增量设定变化",
+                          "{v} is the base video: strictly lock every shot-cut timestamp, 3D camera trajectory, subject orientation, body pose progression and spatial layout without re-staging actions; apply only the delta changes below", v=vids or "@视频1"))
+        elif strategy == "remix":
+            if video_ref == "depth":
+                head.append(T("{v} 是这段的灰度深度控制视频：严格对齐它的镜头切点、推拉运镜轨迹、前景遮挡与三维空间纵深，不要渲染成黑白灰阶；人物外观、材质、色彩和光影完全按参考图与下面的描述全彩渲染",
+                              "{v} is a grayscale depth control video: strictly follow its shot cuts, camera movement, foreground occlusion and 3D spatial depth while rendering full rich color, lighting and textures from the reference images and descriptions below (never output grayscale)", v=vids))
+            elif video_ref == "edge":
+                head.append(T("{v} 是这段的结构边缘控制视频：严格对齐它的镜头切点、轮廓构图比例、运镜和动作节奏，不要渲染成线框或黑白线条；色彩、材质和光影完全按参考图与下面的描述全彩渲染",
+                              "{v} is a structural edge control video: strictly follow its shot cuts, silhouette framing, camera movement and motion rhythm while rendering full rich color, lighting and textures from the reference images and descriptions below (never output wireframe or line-art)", v=vids))
+            else:
+                head.append(T("{v} 是原片：照它的分镜生成，镜头数、每个镜头的时长、景别、机位、运镜、动作和剪辑节奏都跟它一致，画面内容照下面写",
+                              "{v} is the source: follow its shots (count, length, size, camera, movement, action and cutting rhythm); the picture is as written below", v=vids))
         elif strategy == "keyframes":
             head.append(T("按下面的镜头顺序一次生成，镜头之间硬切；每个镜头的构图、景别和机位参考对应的原片画面图",
                           "Generate the shots below in order in one go, hard cuts between them; each shot takes composition, size and camera from its source frame image"))
         head += [_swap_line(sw) for sw in swaps]
-        # in first/last-frame mode, the input frame already fixes aspect ratio, lighting and colour grade; repeating them weakens motion
-        if strategy != "frames":
+        # in first/last-frame or motion-locked edit mode, repeating static scene descriptions weakens motion/pose locking
+        if strategy not in ("frames", "edit"):
             st = style.get(lang(), "") if isinstance(style, dict) else style
             if st:
                 head.append(st)
         if fmt.get("negatives_line", True):
             head.append(T("画面里不要出现字幕、文字和水印", "No subtitles, captions or watermarks in the picture"))
         lines = []
-        for i, x in enumerate(brief, 1):
-            if strategy == "frames":
-                text = (x.get("motion_en") if en and x.get("motion_en") else x.get("motion") or x.get("action")) \
-                    or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
-                mv = x.get("camera_move_en") if en else x.get("camera_move")
-                if fmt.get("camera_brackets") and x.get("bracket") and "[" not in text:
-                    text = f"{x['bracket']} {text}"
-                elif mv and mv.lower() not in text.lower():
-                    text = mv + T("，", ", ") + text
-            else:
-                text = (x.get("action_en") if en and x.get("action_en") else x["action"]) \
-                    or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
-                framing = x.get("framing_en") if en else x.get("framing")
-                if strategy == "keyframes" and not x.get("composition") and framing:
-                    text = framing + T("。", ". ") + text
-                if x.get("composition"):
-                    text += T("（构图参考 {k}）", " (composition: {k})", k=x["composition"])
-                if fmt.get("camera_brackets") and x.get("bracket") and "[" not in text:
-                    text = f"{x['bracket']} {text}"
-            audio_tail = _format_audio_bits(x, fmt, en)
-            if audio_tail:
-                text = text.rstrip("。.；;") + audio_tail
-            a, z = x["at"], x["at"] + x["duration"]
-            i_word = _WORD_NUMS[i - 1] if i <= len(_WORD_NUMS) else str(i)
-            keys = {"i": i, "I_WORD": i_word, "text": text, "a": _mmss(a), "z": _mmss(z), "at": _mmss(a, ms=True),
-                    "s0": int(round(a)), "s1": max(int(round(z)), int(round(a)) + 1), "d": max(1, int(round(x["duration"])))}
-            shot_tpl = fmt.get("remix_shot") if strategy == "remix" and fmt.get("remix_shot") else fmt.get("shot")
-            if shot_tpl:
-                if len(brief) == 1 and strategy == "frames" and not fmt.get("first_shot"):
-                    lines.append(text)
+        if strategy == "edit" and not any(x.get("dialogue") or x.get("sfx") or x.get("composition") for x in brief):
+            lines.append(T("其余所有画面内容保持完全不变（所有切镜时刻、运镜、人物朝向姿态、动作幅度、服饰道具、场景与光影全部照旧）",
+                           "Keep everything else the same (preserve every cut timestamp, camera movement, subject orientation, pose motion, outfit, props, scene and lighting unchanged)"))
+        else:
+            for i, x in enumerate(brief, 1):
+                if strategy == "edit":
+                    text = T("沿用 {v} 对应片段的全部机位运镜、主体朝向、动作姿态与光线构图，仅保持上述设定一致",
+                             "Preserve the exact camera trajectory, subject orientation, pose motion and lighting layout of the matching segment in {v}, applying only the specified delta",
+                             v=vids or "@视频1")
+                    if x.get("composition"):
+                        text += T("（外观参考 {k}）", " (appearance reference: {k})", k=x["composition"])
+                elif strategy == "frames":
+                    text = (x.get("motion_en") if en and x.get("motion_en") else x.get("motion") or x.get("action")) \
+                        or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
+                    mv = x.get("camera_move_en") if en else x.get("camera_move")
+                    if fmt.get("camera_brackets") and x.get("bracket") and "[" not in text:
+                        text = f"{x['bracket']} {text}"
+                    elif mv and mv.lower() not in text.lower():
+                        text = mv + T("，", ", ") + text
                 else:
-                    lines.append((fmt.get("first_shot") if i == 1 and fmt.get("first_shot") else shot_tpl).format(**keys))
-            elif len(brief) == 1:
-                lines.append(text)
-            elif strategy == "remix":
-                lines.append(T("镜头{i}：{t}", "Shot {i}: {t}", i=i, t=text))
-            else:
-                lines.append(T("镜头{i}（从 {a:.1f} 秒起）：{t}", "Shot {i} (from {a:.1f}s): {t}", i=i, a=a, t=text))
+                    text = (x.get("action_en") if en and x.get("action_en") else x["action"]) \
+                        or T("（缺镜头描述：先看图复核补写）", "(no description: write one in the image review)")
+                    framing = x.get("framing_en") if en else x.get("framing")
+                    if strategy == "keyframes" and not x.get("composition") and framing:
+                        text = framing + T("。", ". ") + text
+                    if x.get("composition"):
+                        text += T("（构图参考 {k}）", " (composition: {k})", k=x["composition"])
+                    if fmt.get("camera_brackets") and x.get("bracket") and "[" not in text:
+                        text = f"{x['bracket']} {text}"
+                audio_tail = _format_audio_bits(x, fmt, en)
+                if audio_tail:
+                    text = text.rstrip("。.；;") + audio_tail
+                a, z = x["at"], x["at"] + x["duration"]
+                i_word = _WORD_NUMS[i - 1] if i <= len(_WORD_NUMS) else str(i)
+                keys = {"i": i, "I_WORD": i_word, "text": text, "a": _mmss(a), "z": _mmss(z), "at": _mmss(a, ms=True),
+                        "s0": int(round(a)), "s1": max(int(round(z)), int(round(a)) + 1), "d": max(1, int(round(x["duration"])))}
+                shot_tpl = fmt.get("remix_shot") if strategy in ("remix", "edit") and fmt.get("remix_shot") else fmt.get("shot")
+                if shot_tpl:
+                    if len(brief) == 1 and strategy in ("frames", "edit") and not fmt.get("first_shot"):
+                        lines.append(text)
+                    else:
+                        lines.append((fmt.get("first_shot") if i == 1 and fmt.get("first_shot") else shot_tpl).format(**keys))
+                elif len(brief) == 1:
+                    lines.append(text)
+                elif strategy in ("remix", "edit"):
+                    lines.append(T("镜头{i}：{t}", "Shot {i}: {t}", i=i, t=text))
+                else:
+                    lines.append(T("镜头{i}（从 {a:.1f} 秒起）：{t}", "Shot {i} (from {a:.1f}s): {t}", i=i, a=a, t=text))
         sep = T("。", ". ")
         join_str = fmt.get("join") if isinstance(fmt.get("join"), str) else "\n"
         body_lines = join_str.join(ln.rstrip(".") + "." if join_str == " " and not ln.rstrip().endswith((".", "!", "?", '"')) else ln for ln in lines)
@@ -494,7 +627,7 @@ def _mmss(t: float, ms: bool = False) -> str:
     return f"{int(t // 60):02d}:{t % 60:06.3f}" if ms else f"{int(t // 60):02d}:{int(round(t)) % 60:02d}"
 
 
-def _inputs(strategy: str, refs: list[dict], seg: list[dict], spec: dict) -> list[dict]:
+def _inputs(strategy: str, refs: list[dict], seg: list[dict], spec: dict, b: dict | None = None) -> list[dict]:
     own = [r for r in refs if r.get("user")]
     kf = [r for r in refs if r.get("keyframe")]
     vids = [r for r in refs if r["tag"].startswith("@视频")]
@@ -515,15 +648,28 @@ def _inputs(strategy: str, refs: list[dict], seg: list[dict], spec: dict) -> lis
         out.append({"kind": "first_frame", "need": "yes", "source": T("原片 `{f}`（擦掉字幕；换人、换物时先照着重画）", "source `{f}` (subtitles erased; redraw it first when people or products change)",
                                                                        f=r["assets"]["first_frame"]),
                     "why": T("锁住构图、景别和主体位置", "locks composition, size and subject position")})
-        moves = (r.get("features") or {}).get("camera") not in (None, "static", "unknown")
+        rf = r.get("features") or {}
+        moves = (rf.get("camera") not in (None, "static", "unknown")
+                 or rf.get("camera_traj") not in (None, "static")
+                 or rf.get("motion_regime") == "articulated_action")
         if spec["last"] and (moves or r["duration"] >= 3):
             out.append({"kind": "last_frame", "need": "opt", "source": T("原片 `{f}`，处理同首帧", "source `{f}`, treated like the first frame", f=r["assets"]["last_frame"]),
                         "why": T("有运镜或动作时给终点，动作和落幅更接近原片", "with a move, pinning the end keeps action and final framing close to the source")})
+    if b and spec.get("ref_audio") and (strategy != "frames" or not spec.get("exclusive")) and ((b.get("stems") or {}).get("ok")):
+        vtype = (((b.get("sound_sources") or {}).get("format_context") or {}).get("video_type") or "")
+        audio = b.get("audio") or {}
+        if vtype == "music_mv" or any(r["base"]["label"] == "avatar" for r in seg):
+            out.append({"kind": "ref_audio", "need": "opt", "source": T("人声干声 `stems/vocals.wav`（换歌/换台词时传新干声）", "vocal stem `stems/vocals.wav` (or your new vocal track)"),
+                        "why": T("驱动演唱/说话口型与节奏对齐", "drives singing / lip-sync timing")})
+        elif audio.get("beat_synced_edit") and (audio.get("music") or {}).get("present"):
+            out.append({"kind": "ref_audio", "need": "opt", "source": T("配乐轨 `stems/music.wav`（或替换后的同 BPM 配乐）", "music stem `stems/music.wav` (or your replacement track at the same BPM)"),
+                        "why": T("辅助动作与切镜卡在节拍上", "helps align motion and cuts to the beat")})
     return out
 
 
 def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dict], swaps: list[dict], style,
-               model: dict | None, fmt: dict | None = None, b: dict | None = None, lint_rules: dict | None = None) -> dict:
+               model: dict | None, fmt: dict | None = None, b: dict | None = None, lint_rules: dict | None = None,
+               video_ref: str = "source") -> dict:
     t0, t1 = seg[0]["start"], seg[-1]["end"]
     dur = round(sum(r["duration"] for r in seg), 3)
     ranges = _ranges(seg)
@@ -537,15 +683,33 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
     kept_tags = {r["tag"] for r in refs}
     unit_swaps = [sw if sw.get("tag") in kept_tags else {**sw, "tag": None} for sw in swaps]
     keyframe_tag: dict[int, str] = {}
-    if strategy == "remix":
+    eff_vref = "source" if strategy == "edit" else (video_ref if strategy == "remix" else "none")
+    if strategy in ("remix", "edit"):
         each = min(REF_CLIP_S, spec["ref_total"])
+        v_desc_tpl = {
+            "depth": (T("原片 {s} 的灰度深度控制视频（只参考空间景深、运镜与切镜节奏）", "grayscale depth video of {s} (3D spatial depth, camera and cuts only)"), "depth"),
+            "edge": (T("原片 {s} 的结构边缘控制视频（只参考轮廓构图、运镜与切镜节奏）", "structural edge video of {s} (silhouette framing, camera and cuts only)"), "edge"),
+            "source": (T("原片 {s}（擦掉字幕和贴纸）", "source {s} (subtitles and stickers erased)"), "source"),
+        }
         for part in range(parts):
             a0 = t0 + dur * part / parts
             pr = [[a0, a0 + dur / parts]] if parts > 1 else ranges
             for c, rr in enumerate(_clips(pr, each), 1):
-                refs.append({"tag": f"@视频{c}", "part": part + 1, "ranges": rr,
-                             "what": (T("第 {k} 次：", "call {k}: ", k=part + 1) if parts > 1 else "")
-                             + T("原片 {s}（擦掉字幕和贴纸）", "source {s} (subtitles and stickers erased)", s=join(f"{a:.1f}–{z:.1f}s" for a, z in rr))})
+                span_s = join(f"{a:.1f}–{z:.1f}s" for a, z in rr)
+                desc_txt, vkind = v_desc_tpl.get(eff_vref, v_desc_tpl["source"])
+                refs.append({"tag": f"@视频{c}", "part": part + 1, "ranges": rr, "video_kind": vkind,
+                             "what": (T("第 {k} 次：", "call {k}: ", k=part + 1) if parts > 1 else "") + desc_txt.format(s=span_s)})
+        # For appearance-free control videos (depth / edge) or edit_v2v without global swap image, attach per-shot appearance keyframes if available
+        if eff_vref in ("depth", "edge") and can_ref_img and not own:
+            room = max(0, planned_images(spec) - sum(1 for x in refs if x["tag"].startswith("@图片")))
+            framed = {r["index"] for r in sorted(seg, key=lambda r: -r["duration"])[:room]}
+            for r in seg:
+                if r["index"] not in framed:
+                    continue
+                tag = f"@图片{sum(1 for x in refs if x['tag'].startswith('@图片')) + 1}"
+                keyframe_tag[r["index"]] = tag
+                refs.append({"tag": tag, "keyframe": r["index"], "t": round(r["start"] + min(0.3, r["duration"] / 2), 3),
+                             "what": T("镜头 #{i} 的首帧外观参考图（优先读 remake/redrawn/shot{i:03d}.png）", "appearance keyframe for shot #{i} (uses remake/redrawn/shot{i:03d}.png when present)", i=r["index"])})
     elif strategy == "keyframes":
         # image slots left after the user's own: when they run short, the longest shots keep their source frame and the
         # rest get their framing in words (a call kept whole beats a frame for every shot when subjects have no image)
@@ -564,13 +728,13 @@ def build_unit(seg: list[dict], k: int, strategy: str, spec: dict, own: list[dic
     ambience = str(((b or {}).get("whole_video_vlm") or {}).get("ambience") or "")
     brief = _brief(seg, keyframe_tag, b=b, want_dialogue=want_dlg, want_sfx=can_audio)
     call_s = call_seconds(spec, dur / parts, refs=bool(refs))
-    unit = {"id": f"G{k}", "kind": "generate", "strategy": strategy, "label": label, "label_zh": LABEL_ZH[label],
+    unit = {"id": f"G{k}", "kind": "generate", "strategy": strategy, "video_ref": eff_vref, "label": label, "label_zh": LABEL_ZH[label],
             "shots": [r["index"] for r in seg], "start": round(t0, 3), "end": round(t1, 3), "duration": dur, "ranges": ranges,
             "mode": "multi_shot" if len(seg) > 1 else ("split" if parts > 1 else "single"), "calls": parts,
             "generate_s": round(dur / parts, 3), "call_s": call_s, "model": (model or {}).get("id"), "model_name": model_name((model or {}).get("name")),
-            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style, fmt, ambience=ambience, lint_rules=lint_rules),
+            "refs": refs, "brief": brief, "draft": _draft(strategy, refs, brief, unit_swaps, style, fmt, ambience=ambience, lint_rules=lint_rules, video_ref=eff_vref),
             "draft_format": bool(fmt),
-            "inputs": _inputs(strategy, refs, seg, spec)}
+            "inputs": _inputs(strategy, refs, seg, spec, b=b)}
     unframed = [x["shot"] for x in brief if strategy == "keyframes" and not x.get("composition")]
     missing = [x["shot"] for x in brief if not x["action"]]
     if missing:
@@ -602,12 +766,136 @@ def part_starts(b: dict) -> set[int]:
     return out
 
 
+def _fallback_image_prompt(r: dict, style_str: str, aspect_ratio: str) -> str:
+    """Reverse-engineered still-image prompt for a shot: explicit image_prompt first, else synthesized from framing + description + style."""
+    p = shot_prompts(r)
+    if lang() == "zh" and p.get("image_prompt"):
+        return p["image_prompt"]
+    orient = {"9:16": T("竖屏 9:16", "Vertical 9:16"), "16:9": T("横屏 16:9", "Horizontal 16:9"),
+              "1:1": T("方形 1:1", "Square 1:1"), "3:4": T("竖屏 3:4", "Vertical 3:4"),
+              "4:3": T("横屏 4:3", "Horizontal 4:3")}.get(aspect_ratio, aspect_ratio)
+    fr_loc, fr_en = framing_words(r)
+    fr = fr_en if lang() == "en" else fr_loc
+    desc = (p.get("video_prompt_en") if lang() == "en" else None) or shot_description(r) or _shot_text(r)
+    bits = [x for x in (orient, fr, desc, style_str if lang() == "zh" else "") if x]
+    sep = "。" if lang() == "zh" else ". "
+    return sep.join(x.rstrip("。. ") for x in bits)
+
+
+def build_image_tasks(b: dict, units: list[dict], intent: dict) -> list[dict]:
+    """Plan upstream still-image generation (Text-to-Image vs Image-to-Image) with reverse-engineered prompts and reference files."""
+    gen_ids = list(dict.fromkeys(s for u in units for s in u.get("shots") or []))
+    if not gen_ids or all(u.get("strategy") == "text" for u in units):
+        return []
+    rec_by_idx = {r["index"]: r for r in b.get("shots") or []}
+    cast = entities.cast(b)
+    style_str = str(cast.get("style") or "").strip()
+    ar = str((b.get("source") or {}).get("aspect_ratio") or "9:16")
+    swaps = [s for s in (intent.get("swaps") or []) if s.get("from") or s.get("to") or s.get("image")]
+    # recurring characters across >= 2 generated shots: first shot establishes anchor image, later shots use I2I reference
+    recurring_anchor: dict[int, tuple[int, str]] = {}
+    anchor_shots: set[int] = set()
+    for ch in cast.get("characters") or []:
+        c_shots = [i for i in (ch.get("shots") or []) if i in gen_ids]
+        if len(c_shots) >= 2:
+            anchor = c_shots[0]
+            anchor_shots.add(anchor)
+            cname = str(ch.get("name") or ch.get("id") or T("主角", "character"))
+            for s_idx in c_shots[1:]:
+                recurring_anchor.setdefault(s_idx, (anchor, cname))
+    tasks: list[dict] = []
+    img_ref = str(intent.get("image_ref") or "auto").strip().lower()
+    for idx in gen_ids:
+        r = rec_by_idx.get(idx)
+        if not r:
+            continue
+        u = next((u for u in units if idx in u["shots"]), {})
+        first_ref = (r.get("assets") or {}).get("first_frame") or ""
+        base_p = _fallback_image_prompt(r, style_str, ar)
+        if swaps:
+            method = "i2i"
+            method_zh = T("图生图（保留原片构图换主体）", "image-to-image (keep composition, swap subject)")
+            ctrl_ref = f"remake/refs/shot{idx:03d}_{img_ref}.jpg" if img_ref in ("depth", "edge") else first_ref
+            refs_in = ([f"`{ctrl_ref}`" + (T("（结构控制图定空间构图）", " (structural control frame for spatial layout)") if img_ref in ("depth", "edge")
+                                           else T("（原片首帧定构图与光影）", " (source first frame for composition and lighting)"))] if ctrl_ref else [])
+            refs_in += [f"`{Path(s['image']).name}`" + (T("（{w}）", " ({w})", w=s.get("to") or T("替换主体", "replacement subject"))) for s in swaps if s.get("image")]
+            swap_txt = semi().join(_swap_line(s) for s in swaps)
+            prompt = (f"{swap_txt}。{base_p}" if lang() == "zh" else f"{swap_txt}. {base_p}").strip(" 。.")
+        elif idx in recurring_anchor:
+            anchor, cname = recurring_anchor[idx]
+            method = "i2i"
+            method_zh = T("图生图 / 多图参考生图（锁角色外观）", "image-to-image / reference edit (lock character look)")
+            refs_in = [T("镜头 #{a} 生成的首帧基准图（锁 {n} 外观服饰）", "anchor frame from shot #{a} (locks {n} look and outfit)", a=anchor, n=cname)]
+            if img_ref in ("depth", "edge"):
+                refs_in.append(f"`remake/refs/shot{idx:03d}_{img_ref}.jpg`" + T("（结构控制图定本镜景别与机位）", " (structural frame for shot framing and pose)"))
+            elif img_ref != "none" and first_ref:
+                refs_in.append(f"`{first_ref}`" + T("（原片首帧：对照本镜景别与构图）", " (source first frame: shot framing and pose reference)"))
+            prefix = T("保持与镜头 #{a} 基准图完全一致的人物五官与服装：", "Keep the exact facial features and outfit from shot #{a}'s anchor image: ", a=anchor)
+            prompt = (prefix + base_p).strip()
+        elif img_ref == "none":
+            method = "t2i"
+            method_zh = (T("纯文生图（不垫原片帧；兼作后续镜头角色基准图）", "pure text-to-image (no source frame; serves as character anchor)")
+                         if idx in anchor_shots else
+                         T("纯文生图（不垫原片帧，完全凭提示词独立生成）", "pure text-to-image (independent generation without source frame)"))
+            refs_in = []
+            prompt = base_p
+        elif img_ref == "source":
+            method = "i2i"
+            method_zh = T("图生图（垫擦除字幕的原片首帧：锁渲染介质、光影反差、景深散景与机位，重绘全新角色与主体）",
+                          "image-to-image (from cleaned source first frame: lock rendering medium, lighting contrast, DOF bokeh and camera angle, redraw new subject)")
+            clean_ref = f"remake/refs/shot{idx:03d}_clean.jpg"
+            refs_in = [f"`{clean_ref}`" + T("（已擦除字幕的原片首帧）", " (cleaned source first frame)")]
+            prefix = T("严格继承参考图的渲染介质质感、光影反差、景深散景与机位仰俯角，将人物与主体替换为全新设计：",
+                       "Strictly inherit the reference image's rendering medium, lighting contrast, depth-of-field bokeh and camera angle while replacing the character and subject with a fresh design: ")
+            prompt = (prefix + base_p).strip()
+        elif img_ref in ("depth", "edge"):
+            method = "i2i"
+            kind_lbl = T("深度图", "depth map") if img_ref == "depth" else T("软边缘图", "soft-edge map")
+            method_zh = T("结构参考图生图（垫原片首帧{k}：锁三维构图比例，彻底剥离原片像素与文字）",
+                          "structure-guided I2I (from source {k}: lock 3D spatial layout, strip source pixels and text)", k=kind_lbl)
+            ctrl_ref = f"remake/refs/shot{idx:03d}_{img_ref}.jpg"
+            refs_in = [f"`{ctrl_ref}`" + T("（本镜首帧{k}）", " (shot first-frame {k})", k=kind_lbl)]
+            prefix = T("按参考{k}的空间前后层次、主体比例与机位构图进行全彩高精度渲染（不要输出黑白灰阶或线框）：",
+                       "Follow the reference {k} for 3D spatial layering, subject scale and camera framing while rendering full rich color and textures (never output grayscale or wireframe): ", k=kind_lbl)
+            prompt = (prefix + base_p).strip()
+        else:
+            method = "t2i"
+            method_zh = (T("文生图（兼作后续镜头角色基准图）", "text-to-image (also serves as character anchor image)")
+                         if idx in anchor_shots else
+                         T("文生图（或垫原片首帧做构图参考图生图）", "text-to-image (or low-denoise I2I from source frame)"))
+            refs_in = ([f"`{first_ref}`" + T("（原片首帧：构图与画风对照）", " (source first frame: composition and style reference)")] if first_ref else [])
+            prompt = base_p
+        tasks.append({"shot": idx, "role": "first_frame", "role_zh": T("首帧图", "first frame"),
+                      "method": method, "method_zh": method_zh, "image_ref": img_ref, "refs": refs_in, "prompt": prompt,
+                      "source_frame": first_ref, "t": round(r["start"] + min(0.25, r["duration"] / 3), 3),
+                      "target": f"remake/redrawn/shot{idx:03d}.png"})
+        if u.get("strategy") == "frames" and wants_last_frame(u):
+            last_ref = (r.get("assets") or {}).get("last_frame") or ""
+            l_refs = [T("本镜已生成的首帧图", "this shot's generated first frame")]
+            if last_ref:
+                l_refs.append(f"`{last_ref}`" + T("（原片尾帧落幅对照）", " (source last-frame framing reference)"))
+            tasks.append({"shot": idx, "role": "last_frame", "role_zh": T("尾帧图", "last frame"),
+                          "method": "i2i", "method_zh": T("图生图（由首帧推尾帧状态）", "image-to-image (derive end state from first frame)"),
+                          "refs": l_refs,
+                          "prompt": T("在本镜首帧图基础上，按动作结束状态微调画面落幅：{m}",
+                                      "From this shot's first frame, adjust to the ending pose and framing: {m}",
+                                      m=_motion_text(r, en=lang() == "en")),
+                          "source_frame": last_ref, "target": f"remake/redrawn/{u['id']}_last.png"})
+    return tasks
+
+
 def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[int], style, skip: set[int],
                     notes: dict | None = None, hardcut_max_s: float = 10.0) -> dict:
     """Generation units and the facts they were planned on. `skip`: shots made another way (motion drive, a clip
     reused from another unit)."""
-    spec = spec_of(model)
-    labels = ALL_GEN_LABELS if intent.get("generate") == "all" else GEN_LABELS
+    spec = spec_of(model, intent=intent)
+    mode = intent.get("mode") or ("ai" if intent.get("generate") == "all" else ("shoot" if intent.get("generate") == "none" else "match"))
+    req_vref = intent.get("video_ref")
+    if mode == "shoot" or intent.get("generate") == "none":
+        st_empty = choose_strategy(spec, 0, intent.get("strategy"), video_ref=req_vref)
+        return {"strategy": st_empty, "video_ref": "none", "spec": spec, "labels": [], "units": [], "own_refs": [], "image_tasks": [],
+                "rules": {"max_s": spec["max"], "max_shots": spec["shots"], "mode": "shoot", "generate": "none", "video_ref": "none"}}
+    labels = ALL_GEN_LABELS if (mode == "ai" or intent.get("generate") == "all") else GEN_LABELS
     own = []
     swaps = []
     for s in intent.get("swaps") or []:
@@ -618,28 +906,33 @@ def plan_generation(b: dict, model: dict | None, intent: dict, new_scene: set[in
                         "what": (s["to"] or T("用户给的参考图", "the user's reference image")) + (T("（替换原片的{f}）", " (replaces the source's {f})", f=s["from"]) if s["from"] else "")})
         if s["from"] or s["to"]:
             swaps.append({"from": s["from"], "to": s["to"], "tag": tag})
-    strategy = choose_strategy(spec, len(own))
-    cap_hardcut = spec.get("max_hardcut_s") or hardcut_max_s
-    if strategy == "remix":
-        max_s, max_shots = min(spec["max"], spec["ref_total"]), (spec["shots"] if spec["multi_shot"] else 1)
+    gen_shot_ids = [r["index"] for r in b["shots"] if r["base"]["label"] in labels and r["index"] not in skip]
+    discont = is_discontinuous_montage(b, gen_shot_ids, new_scene, own)
+    strategy = choose_strategy(spec, len(own), intent.get("strategy"), video_ref=req_vref, discontinuous=discont)
+    eff_vref = "source" if strategy == "edit" else ((req_vref if req_vref in ("source", "depth", "edge") else "source") if strategy == "remix" else "none")
+    # Respect the model's real per-call duration limit: only apply a hardcut cap when the model entry explicitly sets max_hardcut_s
+    cap_hardcut = spec.get("max_hardcut_s")
+    if strategy in ("remix", "edit"):
+        max_s, max_shots = min(spec["max"], spec["ref_total"]), (spec["shots"] if (spec["multi_shot"] or strategy == "edit") else 1)
     elif strategy == "keyframes":
-        # a swapped-in subject with no image is held only by its description: every extra call is another chance for it
-        # to come out different, so keep calls whole and let some shots go without a source frame; otherwise apply S06 hardcut guard
         text_only = any(not s.get("image") for s in intent.get("swaps") or [])
-        max_s = spec["max"] if text_only else min(spec["max"], cap_hardcut)
+        max_s = spec["max"] if (text_only or not cap_hardcut) else min(spec["max"], cap_hardcut)
         max_shots = spec["shots"] if text_only else min(x for x in (spec["shots"], planned_images(spec) - len(own)) if x)
     elif strategy == "text" and spec["multi_shot"]:
-        max_s, max_shots = min(spec["max"], cap_hardcut), spec["shots"]
+        max_s, max_shots = (min(spec["max"], cap_hardcut) if cap_hardcut else spec["max"]), spec["shots"]
     else:
         max_s, max_shots = spec["max"], 1
     units: list[dict] = []
     new_part = part_starts(b)
-    for run in runs(b["shots"], labels, skip, joinable_inserts=strategy in ("remix", "keyframes", "text") and max_shots != 1):
+    for run in runs(b["shots"], labels, skip, joinable_inserts=strategy in ("edit", "remix", "keyframes", "text") and max_shots != 1):
         for seg in pack(run, max_s, max_shots, new_scene, new_part):
             units.append(build_unit(seg, len(units) + 1, strategy, spec, own, swaps, style, model,
-                                    (notes or {}).get("draft"), b=b, lint_rules=(notes or {}).get("lint")))
-    return {"strategy": strategy, "spec": spec, "labels": list(labels), "units": units, "own_refs": own,
-            "rules": {"max_s": max_s, "max_shots": max_shots, "generate": intent.get("generate", "ai")}}
+                                    (notes or {}).get("draft"), b=b, lint_rules=(notes or {}).get("lint"), video_ref=eff_vref))
+    img_tasks = build_image_tasks(b, units, intent)
+    return {"strategy": strategy, "video_ref": eff_vref, "spec": spec, "labels": list(labels), "units": units, "own_refs": own,
+            "image_tasks": img_tasks, "discontinuous_montage": discont,
+            "rules": {"max_s": max_s, "max_shots": max_shots, "mode": mode, "generate": intent.get("generate", "ai"),
+                      "video_ref": eff_vref, "image_ref": intent.get("image_ref", "auto")}}
 
 
 # ---------------------------------------------------------------- checks
@@ -711,6 +1004,30 @@ def part_frame_name(u: dict, part: int, key: str) -> str:
     return f"{u['id']}_{key}" if int(u.get("calls") or 1) <= 1 else f"{u['id']}_p{part}_{key}"
 
 
+def unit_frame_aliases(u: dict, part: int, key: str) -> list[str]:
+    """Accepted filenames under remake/redrawn/ for a frames-mode unit's first or last frame (bridges `G1_first` and `shot001`)."""
+    primary = part_frame_name(u, part, key)
+    out = [primary]
+    shots = u.get("shots") or []
+    if int(u.get("calls") or 1) <= 1 and len(shots) == 1:
+        idx = int(shots[0])
+        extra = [f"shot{idx:03d}", f"shot{idx:03d}_first"] if key == "first" else [f"shot{idx:03d}_last"]
+        for nm in extra:
+            if nm not in out:
+                out.append(nm)
+    return out
+
+
+def resolve_redrawn_frame(out: Path, names: str | list[str]) -> Path | None:
+    """First existing redrawn file among `names` (e.g. `G1_first` or `shot001`)."""
+    cands = [names] if isinstance(names, str) else list(names)
+    for nm in cands:
+        hit = redrawn_frame(out, nm)
+        if hit is not None:
+            return hit
+    return None
+
+
 def wants_last_frame(u: dict) -> bool:
     return any(x["kind"] == "last_frame" and x["need"] != "no" for x in u.get("inputs") or [])
 
@@ -722,6 +1039,24 @@ def source_frame_names(u: dict) -> list[str]:
         keys = ("first", "last") if wants_last_frame(u) else ("first",)
         names += [part_frame_name(u, part, key) for part in range(1, int(u.get("calls") or 1) + 1) for key in keys]
     return names
+
+
+def _unredrawn_frame_names(u: dict, root: Path | None) -> list[str]:
+    """Names of unit source frames that have not yet been redrawn under remake/redrawn/ (respecting shotNNN aliases)."""
+    out: list[str] = []
+    for r in u.get("refs") or []:
+        if r.get("keyframe"):
+            nm = f"shot{int(r['keyframe']):03d}"
+            if not (root and redrawn_frame(root, nm)):
+                out.append(nm)
+    if u.get("strategy") == "frames":
+        keys = ("first", "last") if wants_last_frame(u) else ("first",)
+        for part in range(1, int(u.get("calls") or 1) + 1):
+            for key in keys:
+                aliases = unit_frame_aliases(u, part, key)
+                if not (root and resolve_redrawn_frame(root, aliases)):
+                    out.append(aliases[0])
+    return out
 
 
 def unit_images(u: dict) -> list[dict]:
@@ -756,6 +1091,16 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
               "this model takes no reference images: only the text description is used; pick a model with reference images or first-frame input to lock appearance"))
     for u in units:
         n_img, n_vid = len(unit_images(u)), len({r["tag"] for r in u["refs"] if r["tag"].startswith("@视频")})
+        if u.get("video_ref") in ("depth", "edge") and not spec.get("control_video"):
+            m_name = u.get("model_name") or u.get("model") or "?"
+            add("error", T("{u} 选了 {v} 控制视频，但 {m} 仅声明语义参考视频（video.reference_video），不支持像素级空间控制（video.control_video），会导致姿态朝向丢失、跨镜串色或灰阶污染：请改用 --strategy edit（原片动作锁定编辑）、--strategy frames（逐镜首尾帧锁构图），或换支持 video.control_video 的模型（如 wan-vace）",
+                           "{u} uses a {v} control video, but {m} only declares semantic reference video (video.reference_video), not pixel-aligned spatial control (video.control_video), causing pose drift, cross-shot bleed or grayscale wash: switch to --strategy edit, --strategy frames, or a video.control_video model (e.g. wan-vace)",
+                           u=u["id"], v=u.get("video_ref"), m=m_name), u["id"])
+        if u.get("strategy") == "keyframes" and len(u.get("shots") or []) > 1 and not spec.get("pinned_keyframes") and plan.get("discontinuous_montage"):
+            m_name = u.get("model_name") or u.get("model") or "?"
+            add("warn", T("{u} 把多个无共享角色、跨场景的独立镜头合进了 {m} 的无时间戳多图池（video.multi_reference），容易跨镜头串角色或丢失首帧朝向：建议改用 --strategy frames 逐镜锁首尾帧，或改用 --strategy edit 锁原片动作",
+                          "{u} packs disjoint multi-character shots into {m}'s unpinned image pool (video.multi_reference), risking cross-shot identity bleed and unpinned poses: prefer --strategy frames or --strategy edit",
+                          u=u["id"], m=m_name), u["id"])
         if spec.get("images") is not None and n_img > max(spec["images"], 0) and (n_img or spec.get("multi_ref")):
             add("error", T("{u} 要传 {n} 张图，超过这个模型的 {m} 张", "{u} sends {n} images, over this model's {m}", u=u["id"], n=n_img, m=spec["images"]), u["id"])
         for part in sorted({r.get("part", 1) for r in u["refs"] if r["tag"].startswith("@视频")}):
@@ -770,14 +1115,14 @@ def checks(plan: dict, intent: dict, prompts: dict[str, str], notes: dict | None
         if u["generate_s"] < SHORT_UNIT_S:
             add("warn", T("{u} 只有 {d:.1f} 秒：单独生成不稳，按模型最短时长生成后剪短，或和相邻镜头合到一起",
                           "{u} is only {d:.1f}s: unstable on its own; generate the model's minimum and trim, or join it with a neighbour", u=u["id"], d=u["generate_s"]), u["id"])
-        stale_frames = [x for x in source_frame_names(u) if not (root and redrawn_frame(root, x))] if intent.get("swaps") else []
+        stale_frames = _unredrawn_frame_names(u, root) if intent.get("swaps") else []
         if stale_frames:
             add("warn", T("{u} 的参考帧还是原片里被替换的主体，模型会在镜头中途变来变去：先照换入的主体重画，存成 remake/redrawn/{f}.png",
                           "{u}'s reference frames still show the subject being swapped, so the model may morph it mid-shot: redraw them with the new subject as remake/redrawn/{f}.png",
                           u=u["id"], f="|".join(stale_frames)), u["id"])
         if spec.get("no_real_faces"):
             framed_shots = {int(r["keyframe"]) for r in u.get("refs") or [] if r.get("keyframe") and not (root and redrawn_frame(root, f"shot{int(r['keyframe']):03d}"))}
-            frames_unredrawn = u.get("strategy") == "frames" and any(not (root and redrawn_frame(root, x)) for x in source_frame_names(u))
+            frames_unredrawn = u.get("strategy") == "frames" and bool(_unredrawn_frame_names(u, root))
             face_shots = [x["shot"] for x in u.get("brief") or []
                           if x.get("real_face") and (n_vid > 0 or frames_unredrawn or x["shot"] in framed_shots)]
             if face_shots:
@@ -877,6 +1222,7 @@ def rewrite_prompts(plan: dict, out: Path, client=None) -> dict[str, str]:
     fmt = notes.get("draft") or {}
     st = plan.get("strategy") or "frames"
     st_rule = {
+        "edit": "IMPORTANT (Motion-Preserving Video Edit mode): The uploaded base video ALREADY defines every shot cut, 3D camera trajectory, subject orientation, pose progression and timing. Keep the prompt concise and delta-only: state ONLY what visual attributes/subjects differ and explicitly lock all camera moves, poses, cuts and timing to the base video without writing a verbose re-staging screenplay.",
         "frames": "IMPORTANT (First/Last-Frame I2V mode): The input image ALREADY fixes subject appearance, clothing, background, lighting and framing. Write ONLY the motion progression, end state and camera movement; delete static scene/appearance descriptions.",
         "remix": "IMPORTANT (Reference-video Remix mode): The reference video carries shot cuts, camera movement and pacing. Assign roles to uploaded assets clearly and describe what happens in each shot with the swapped subjects/props.",
         "keyframes": "IMPORTANT (Multi-shot Keyframe Reference mode): Each framed shot gets a source composition image; swapped subjects have their own reference images. State each image's role clearly and write shots in order.",
@@ -938,7 +1284,8 @@ def check_lines(cs: list[dict]) -> list[str]:
 
 # ---------------------------------------------------------------- report
 INPUT_ZH = {"text": ("文字提示词", "text prompt"), "first_frame": ("首帧图", "first frame"), "last_frame": ("尾帧图", "last frame"),
-            "ref_image": ("参考图", "reference images"), "ref_video": ("参考视频", "reference video")}
+            "ref_image": ("参考图", "reference images"), "ref_video": ("参考视频", "reference video"),
+            "ref_audio": ("参考音频", "reference audio")}
 NEED_ZH = {"yes": ("要", "yes"), "opt": ("建议", "worth it"), "no": ("不用", "no")}
 
 
@@ -946,38 +1293,82 @@ def _fed(u: dict) -> str:
     return " + ".join(dict.fromkeys(T(*INPUT_ZH[x["kind"]]) for x in u.get("inputs") or [] if x["need"] != "no" and x["kind"] != "text"))
 
 
+def image_tasks_md(tasks: list[dict], strategy: str) -> list[str]:
+    """Markdown block for the upstream still-image layer (Text-to-Image vs Image-to-Image + reverse-engineered prompts + refs)."""
+    if not tasks:
+        return []
+    note = (T("当前视频模态为首帧/首尾帧图生视频：先按下表逐张生成画面帧，再喂入视频模型跑纯动态。",
+              "Video modality is first/last-frame I2V: generate the still frames below first, then feed them into the video model with motion-only prompts.")
+            if strategy == "frames" else
+            T("如果不直接喂原片画面、而是要做全新角色/换主体或改走逐镜图生视频，按下表准备每镜首帧图（已区分文生图与图生图，并给出反推生图提示词与参考图）：",
+              "When generating fresh visuals, swapping subjects, or running shot-by-shot I2V instead of feeding raw source frames, prepare each shot's frame as below (T2I vs I2I, reverse-engineered image prompts and reference files):"))
+    L = ["", "<details><summary>" + T("前置图片准备与反推提示词（文生图 / 图生图，共 {n} 张）",
+                                      "Upstream image preparation and reverse-engineered prompts (T2I / I2I, {n} images)", n=len(tasks)) + "</summary>", "",
+         note, "",
+         T("| 镜头 | 用途 | 生图方式 | 参考图输入 | 产出保存路径 |", "| Shot | Role | Image modality | Reference inputs | Save as |"),
+         "|---|---|---|---|---|"]
+    for t in tasks:
+        refs_s = semi().join(t.get("refs") or []) or "—"
+        L.append(f"| #{t['shot']} | {t['role_zh']} | {t['method_zh']} | {refs_s} | `{t['target']}` |")
+    L.append("")
+    for t in tasks:
+        if t.get("prompt"):
+            L.append(f"- **#{t['shot']} {t['role_zh']}（{t['method_zh']}）**" if lang() == "zh"
+                     else f"- **#{t['shot']} {t['role_zh']} ({t['method_zh']})**")
+            L.append(f"  - {T('图片提示词：', 'Image prompt: ')}{t['prompt']}")
+    L += ["", "</details>"]
+    return L
+
+
 def report_md(plan: dict, prompts: dict[str, str]) -> list[str]:
-    """The generation subsection of the remake part: how it was grouped, then one block per unit."""
+    """The generation subsection of the remake part: video modality, grouping, per-unit prompts, and upstream image layer."""
     units = plan.get("units") or []
     if not units:
         return []
     rules, spec = plan.get("rules") or {}, plan.get("spec") or {}
     st = plan.get("strategy")
-    how = {"remix": T("这段原片擦掉字幕后当参考视频，模型照它的分镜、运镜和节奏出完这段的镜头",
-                      "the source stretch, subtitles erased, is the reference video; the model follows its shots, camera and pacing"),
-           "keyframes": (T("这个模型也能吃参考视频，这里按它的默认排法：", "the model also takes reference video, but its default plan is used here: ")
+    vref = plan.get("video_ref") or rules.get("video_ref") or ("source" if st in ("remix", "edit") else "none")
+    remix_how = {
+        "depth": T("把原片转为灰度深度控制视频（`depth.mp4`）传入，模型照它的三维空间纵深、运镜轨迹与切镜节奏生成，外观材质与色彩完全按参考图与提示词重绘（需模型支持 `video.control_video`；可用 `--video-ref none|source|edge` 切换）",
+                   "feeds a grayscale depth control video (`depth.mp4`) so the model follows 3D spatial depth, camera and cut timing while redrawing full look and colour (requires `video.control_video`; switch with `--video-ref none|source|edge`)"),
+        "edge": T("把原片转为结构软边缘控制视频（`edge.mp4`）传入，模型照它的轮廓构图、运镜与节奏生成，外观材质与光影完全重绘（需模型支持 `video.control_video`；可用 `--video-ref none|source|depth` 切换）",
+                  "feeds a structural edge control video (`edge.mp4`) so the model follows silhouette layout, camera and pacing while redrawing full look and lighting (requires `video.control_video`; switch with `--video-ref none|source|depth`)"),
+        "source": T("这段原片擦掉字幕后直接当参考视频，模型照它的分镜、运镜和节奏一次出完这段的镜头（可用 `--strategy edit` 切为极简增量动作锁定编辑，或 `--video-ref none` 不传原视频）",
+                    "the source stretch, subtitles erased, is the reference video; the model follows its shots, camera and pacing in one go (pass `--strategy edit` for motion-locked delta editing, or `--video-ref none` for no reference video)"),
+    }.get(vref)
+    how = {"edit": T("把擦掉字幕的原片作为基准视频，配极简增量编辑提示词（仅声明要改的外观/属性，显式锁死原片切镜、运镜、主体朝向与动作姿态，避免模型推翻原动作重演）",
+                     "feeds the subtitle-erased source clip with a delta-only edit prompt (states only visual attribute/subject changes while locking cuts, camera trajectory, orientation and poses)"),
+           "remix": remix_how,
+           "keyframes": (T("这个模型也能吃参考视频，这里按不传原视频的多图关键帧排法（可用 `--strategy edit` 或 `--video-ref source` 切为原视频参考）：",
+                           "the model also takes reference video; using multi-shot keyframes without reference video here (pass `--strategy edit` or `--video-ref source` for video reference): ")
                          if spec.get("ref_video") else T("这个模型不吃参考视频，", "the model takes no reference video: "))
-                        + T("每个镜头给一张擦掉字幕的原片画面定构图，换进去的东西各给参考图",
-                            "one source frame per shot (subtitles erased) fixes composition, swapped-in things get their own images"),
-           "frames": T("一次只出一个镜头，从原片首帧（和尾帧）起步", "one shot per call, from the source's first (and last) frame"),
-           "text": T("只有文字提示词", "prompt only")}[st]
-    notes_md = [T("- 分组：连着的镜头尽量放进同一次生成，单次 ≤{s:.0f} 秒", "- Grouping: consecutive shots share a call where they fit, ≤{s:.0f}s per call", s=rules.get("max_s") or 0)
-         + (T("、≤{n} 个镜头", ", ≤{n} shots", n=rules["max_shots"]) if rules.get("max_shots") else "")
-         + T("；段太长时优先在换场景处切开", "; a long stretch is cut at a scene change first"),
-         T("- 输入：{h}", "- Inputs: {h}", h=how)]
+                        + T("每个镜头给一张关键帧图定构图/外观，换进去的东西各给参考图",
+                            "one keyframe image per shot fixes composition/look, swapped-in things get their own images"),
+           "frames": T("一次出一个镜头，先用文生图/图生图做好首帧（及尾帧），再配纯动态提示词图生视频",
+                       "one shot per call: prepare the first (and last) frame via T2I/I2I, then run image-to-video with a motion-only prompt"),
+           "text": T("纯文字提示词直接文生视频", "text-to-video from prompt only")}[st]
+    notes_md = [T("- 视频生成模态：{m}（参考形式：{v}）", "- Video modality: {m} (video reference: {v})", m=strategy_name(st), v=video_ref_name(vref)),
+                T("- 可选参考形式切换：`--video-ref none`（不传原视频）/ `source`（原视频直接参考）/ `depth`（深度视频参考）/ `edge`（边缘结构视频参考）；前置生图可用 `--image-ref none|source|depth|edge` 控制",
+                  "- Switch reference regime: `--video-ref none` (no source video) / `source` (raw source video) / `depth` (depth video) / `edge` (edge video); control still generation with `--image-ref none|source|depth|edge`"),
+                T("- 分组：按模型真实单次上限（≤{s:.0f} 秒", "- Grouping: packed up to the model's real per-call limit (≤{s:.0f}s", s=rules.get("max_s") or 0)
+                + (T("、≤{n} 个镜头", ", ≤{n} shots", n=rules["max_shots"]) if rules.get("max_shots") else "")
+                + T("）合并，能一次生成的绝不拆碎；超长时优先在叙事段落或换景处切开", "), keeping stretches in one call whenever they fit; longer stretches cut at story seams or scene changes"),
+                T("- 输入：{h}", "- Inputs: {h}", h=how)]
     if plan.get("audio_note"):
         notes_md.append(T("- 声音：{a}", "- Audio: {a}", a=plan["audio_note"]))
     if plan.get("overlay_note"):
         notes_md.append(T("- 包装层：{a}", "- Packaging: {a}", a=plan["overlay_note"]))
-    L = [T("| 段 | 镜头 | 时间 | 时长 | 要准备 |", "| Part | Shots | Time | Length | Prepare |"), "|---|---|---|---|---|"]
+    L = [T("- **视频生成方式**：{m}", "- **Video modality**: {m}", m=strategy_name(st)), "",
+         T("| 段 | 镜头 | 时间 | 时长 | 视频模型输入 |", "| Part | Shots | Time | Length | Video model inputs |"), "|---|---|---|---|---|"]
     for u in units:
         when = join(f"{a:.1f}–{z:.1f}s" for a, z in u["ranges"])
         call = u.get("call_s") or u["generate_s"]
         length = (T("生成 {m:.0f}s，剪到 {d:.1f}s", "generate {m:.0f}s, trim to {d:.1f}s", m=call, d=u["generate_s"])
                   if call - u["generate_s"] >= 0.5 else f"{u['duration']:.1f}s")
         L.append(f"| {u['id']} | {shot_ids(u['shots'])} | {when} | {length}"
-                 f"{T('（{c} 次）', ' ({c} calls)', c=u['calls']) if u['calls'] > 1 else ''} | {_fed(u) or '—'} |")
-    L += ["", '<details class="ref"><summary>' + T("这样分段的原因", "Why it is split this way") + "</summary>", ""] + notes_md + ["", "</details>"]
+                 f"{T('（{c} 次）', ' ({c} calls)', c=u['calls']) if u['calls'] > 1 else ''} | {_fed(u) or T('纯文本提示词', 'text prompt')} |")
+    L += ["", '<details class="ref"><summary>' + T("模态选择与分段依据", "Modality choice and grouping basis") + "</summary>", ""] + notes_md + ["", "</details>"]
+    L += image_tasks_md(plan.get("image_tasks") or [], st)
     for u in units:
         L += ["", "<details><summary>" + T("{id} · 镜头 {sh} · {d:.1f}s", "{id} · shots {sh} · {d:.1f}s",
                                            id=u["id"], sh=shot_ids(u["shots"]), d=u["duration"]) + "</summary>", "",
