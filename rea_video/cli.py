@@ -543,17 +543,6 @@ def cmd_compare(args) -> int:
     for p in (args.ref, args.remake):
         if not Path(p).is_file():
             raise SystemExit(U(f"rea-video: 找不到 {p}", f"rea-video: not found: {p}"))
-    if getattr(args, "breakdown", None):
-        from .remake_qa import evaluate_remake
-
-        bp = Path(args.breakdown)
-        if not bp.is_file():
-            raise SystemExit(U(f"rea-video: 找不到 {bp}", f"rea-video: not found: {bp}"))
-        b = read_json(bp)
-        b = {**b, "source": {**(b.get("source") or {}), "path": str(Path(args.ref).resolve())}}
-        qa = evaluate_remake(b, args.remake, out_dir=Path(args.out) if args.out else None, replaced_only=False)
-        print(json.dumps(qa, ensure_ascii=False, indent=1))
-        return 0
     from .layers import compare
 
     if args.every <= 0:
@@ -1052,7 +1041,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--overlays", action="store_true",
                    help="把测得的字幕 / 花字 / 标题按原样式叠回换掉的镜头（保留原片的镜头本来就有）；贴纸只列出来，要自己找素材")
     a.add_argument("--retime", choices=["smooth", "warp"], default="smooth",
-                   help="时间对齐方式：smooth 均匀连续帧混合重采样、零冻结帧（默认）/ warp 离散运动峰值动态时间规整")
+                   help="怎么把生成片段对到原镜头时长：smooth 均匀变速并补帧混合（默认）/ warp 按动作峰值对齐原片")
     a.set_defaults(func=cmd_assemble)
 
     t = sub.add_parser("tiles", help="按时间抽帧拼图，近距离检查某一段（agent 复核用）")
@@ -1075,10 +1064,9 @@ def main(argv: list[str] | None = None) -> int:
     fr.add_argument("--all", action="store_true", help="所有镜头都做，不只是代码渲染镜头")
     fr.set_defaults(func=cmd_frames)
 
-    cp = sub.add_parser("compare", help="比较复刻成片与原片：默认比对代码图形层，传 --breakdown 时逐镜评测运镜、姿态动态、构图与流畅度")
+    cp = sub.add_parser("compare", help="逐帧比较复刻和原片画上去的那一层（落在哪、形状重合度、多少），列出最差的时刻并拼对比图")
     cp.add_argument("ref", help="原片")
     cp.add_argument("remake", help="复刻成片")
-    cp.add_argument("--breakdown", help="breakdown.json：按镜头评测生成式复刻的运镜方向、主体姿态动态、构图轮廓与冻结帧")
     cp.add_argument("--every", type=float, default=0.5, help="采样间隔秒数（默认 0.5）")
     cp.add_argument("--scenes", help="frames/scenes.json：按场景汇总分数")
     cp.add_argument("--worst", type=int, default=8, help="对比图里放几个最差时刻（默认 8）")

@@ -69,7 +69,7 @@ HELP = {
     "capsule-draft.python": "capsule-cinema Python; same default as remake-run",
     "assemble": "through Capsule Cinema: put remade shots back on the original timeline and output a comparison video",
     "assemble.results": "results.json from remake-run (or your own file in the same format)",
-    "assemble.retime": "timing alignment: smooth frame-blended resampling with zero frozen frames (default) / warp discrete DTW peak matching",
+    "assemble.retime": "timing: smooth evenly resamples with frame blending (default) / warp lines up motion peaks with the original",
     "assemble.capsule_root": _CAPSULE_ROOT,
     "assemble.overlays": "put measured captions / styled text / titles back on replaced shots in their original style (kept shots already have them); stickers are only listed, so source them yourself",
 
@@ -83,10 +83,9 @@ HELP = {
     "frames.points": "sample points per scene (default 4000)",
     "frames.all": "process all shots, not only code-rendered ones",
 
-    "compare": "compare a remake against the original: drawn graphics layer by default, or per-shot camera/pose/layout/smoothness QA when --breakdown is given",
+    "compare": "compare the drawn layer of a remake and the original frame by frame (position, shape overlap, amount), list the worst moments and tile them",
     "compare.ref": "original video",
     "compare.remake": "remade video",
-    "compare.breakdown": "breakdown.json: score generative remakes per shot on camera move, pose dynamics, layout and freeze frames",
     "compare.every": "sampling interval in seconds (default 0.5)",
     "compare.scenes": "frames/scenes.json: summarize scores per scene",
     "compare.worst": "worst moments to show in the comparison image (default 8)",

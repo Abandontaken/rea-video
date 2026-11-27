@@ -364,12 +364,6 @@ def _layers_md(b: dict) -> list[str]:
                  s="" if n_by.get(m["label_zh"]) == 1 else "s", p=_pct(m["ratio"]))
                for m in s["production_mix"] if n_by.get(m["label_zh"]))
     pic_how = _picture_how(b) or s.get("production") or "—"
-    if plan.get("strategy") and plan.get("units"):
-        from .generation import strategy_name
-
-        img_n = len(plan.get("image_tasks") or [])
-        pic_how += T("（模态：{m}", " (modality: {m}", m=strategy_name(plan["strategy"])) + (
-            T("；含 {n} 张前置图片方案）", "; {n} upstream frame prompts)", n=img_n) if img_n else T("）", ")"))
     rm = s.get("real_material") or {}
     if rm.get("shots"):
         pic += T("；含真实素材 {n} 镜（{r:.0%}）", "; includes real material in {n} shot{s} ({r:.0%})",
@@ -1079,9 +1073,9 @@ def _shot_detail_md(r: dict) -> list[str]:
     L += ["", T("- 复刻：{n}", "- Remake: {n}", n=rep["note"])]
     p = shot_prompts(r)
     if p.get("image_prompt"):
-        L.append(T("  - 反推首帧生图提示词：{p}", "  - Reverse-engineered image prompt: {p}", p=p["image_prompt"]))
+        L.append(T("  - 首帧生图提示词：{p}", "  - First-frame image prompt: {p}", p=p["image_prompt"]))
     if p.get("motion_prompt"):
-        L.append(T("  - 图生视频纯动态提示词：{p}", "  - Image-to-video motion prompt: {p}", p=p["motion_prompt"]))
+        L.append(T("  - 图生视频动作提示词：{p}", "  - Image-to-video motion prompt: {p}", p=p["motion_prompt"]))
     if p.get("video_prompt"):
         L.append(T("  - 完整视频提示词：{p}", "  - Full video prompt: {p}", p=p["video_prompt"]))
     return L

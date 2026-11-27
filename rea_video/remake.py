@@ -323,10 +323,10 @@ def unit_shots(b: dict, results: dict, udir: Path, size: tuple[int, int], fps: f
         shots_list = [i for i in (got[0].get("shots") or []) if i in by_index and i in bounds]
         # Single-call multi-shot unit: slice at actual pixel hard cuts first so cuts never drift into neighbouring shots
         if len(got) == 1 and len(shots_list) > 1:
-            from .integrations.run_remake import _split_multishot_unit
+            from .unit_split import split_unit
 
             r_shots = [by_index[i] for i in shots_list]
-            split_map = _split_multishot_unit(Path(got[0]["video"]), shots_list, float(got[0].get("trim_to") or 0),
+            split_map = split_unit(Path(got[0]["video"]), shots_list, float(got[0].get("trim_to") or 0),
                                               udir / f"{uid}_cuts", ref_shots=r_shots, bdir=bdir)
             if len(split_map) == len(shots_list):
                 for s_key, s_vid in split_map.items():
@@ -457,18 +457,8 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
         except subprocess.CalledProcessError:
             if not with_text:
                 raise
-    qa_summary: dict | None = None
-    if any(how == "generated" for _, how in legend):
-        try:
-            from .remake_qa import evaluate_remake
-
-            qa_res = evaluate_remake({**b, "source": {**b["source"], "path": str(src)}}, final, out_dir=out_dir, legend=legend, replaced_only=True)
-            if qa_res.get("evaluated_shots"):
-                qa_summary = {k: qa_res.get(k) for k in ("evaluated_shots", "score", "camera_score", "motion_score", "layout_score", "smoothness", "issues")}
-        except Exception as exc:  # noqa: BLE001  QA diagnostics must never abort assembly
-            LOG.warning("remake QA evaluation failed: %s", str(exc)[:120])
     log = {"legend": legend, "remake": str(final), "compare": str(compare), **({"timing": timing} if timing else {}),
-           **({"overlays": overlay_log} if overlays else {}), **({"qa": qa_summary} if qa_summary else {})}
+           **({"overlays": overlay_log} if overlays else {})}
     (out_dir / "assemble_log.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
     LOG.info("remake -> %s ; compare -> %s", final, compare)
     return json.dumps(log, ensure_ascii=False)
@@ -627,15 +617,8 @@ def remake(out: Path, code: bool = False, overlays: bool = True) -> dict:
          T("| 镜头 | 时间 | 画面类型 | 现在 |", "| Shot | Time | Picture | Now |"), "|---|---|---|---|"]
     for r in rows:
         L.append(f"| #{r['shot']} | {r['start']:.1f}–{r['end']:.1f}s | {LABEL_ZH.get(r['label'], r['label'])} | {HOW[r['now']]} |")
-    qa_file = rdir / "qa.json"
-    if log.get("qa") and qa_file.is_file():
-        from .remake_qa import qa_markdown
-
-        L += qa_markdown(read_json(qa_file))
     (rdir / "status.md").write_text("\n".join(L) + "\n", encoding="utf-8")
-    write_json(rdir / "status.json", {"replaced_share": round(done / total, 3), "shots": rows,
-                                      **({"qa": log["qa"]} if log.get("qa") else {})})
+    write_json(rdir / "status.json", {"replaced_share": round(done / total, 3), "shots": rows})
     res.update({"remake": log["remake"], "compare": log["compare"], "status": str(rdir / "status.md"),
-                "replaced_share": round(done / total, 3), "to_do": todo,
-                **({"qa": log["qa"]} if log.get("qa") else {})})
+                "replaced_share": round(done / total, 3), "to_do": todo})
     return res

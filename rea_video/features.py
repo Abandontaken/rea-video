@@ -597,6 +597,11 @@ def kinematics_summary(frames: list[np.ndarray], frame_times: list[float], ms: d
         traj = "push_in" if z_eff > 0 else "pull_out"
     else:
         traj = "static"
+    # The rigid fit already found a still camera: what moved is the subject, which fills enough of the frame to pull the
+    # quadrant flow. Only a large, clear push or pull overrides that.
+    if cam_kind in ("static", "static_with_subject_motion") and kb <= 0.5 \
+            and not (traj in ("push_in", "pull_out") and abs(net_zoom_pct) >= 8.0):
+        traj = "static"
 
     # Subject-depth-adaptive central contour comparison: under 3D parallax, the central subject scales at its own depth
     # Z_subject (often faster than distant background). A held pose matches across start->end under some 2D scale + small
